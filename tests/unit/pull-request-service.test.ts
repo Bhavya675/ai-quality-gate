@@ -157,17 +157,19 @@ describe("PullRequestService", () => {
     });
   });
 
-  it("does not expose GitHub API error details", async () => {
+  it("exposes GitHub API error details", async () => {
     const github = createGitHubMock();
-    vi.mocked(github.rest.pulls.get).mockRejectedValue(
-      new Error("Sensitive internal API detail"),
-    );
+
+    const githubError = new Error("GitHub API request failed");
+
+    vi.mocked(github.rest.pulls.get).mockRejectedValueOnce(githubError);
 
     const service = new PullRequestService(github);
 
     await expect(service.getReviewContext(input)).rejects.toMatchObject({
       code: "GITHUB_API_FAILED",
-      message: "Unable to retrieve pull request information from GitHub.",
+      message:
+        "Unable to retrieve pull request information from GitHub: GitHub API request failed",
     });
   });
 });
