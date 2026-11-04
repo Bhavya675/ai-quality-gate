@@ -136,10 +136,19 @@ export class PullRequestReviewPipeline {
     try {
       pullRequest =
         await this.dependencies.pullRequestService.getReviewContext(event);
-    } catch {
+    } catch (error) {
+      if (error instanceof PullRequestServiceError) {
+        throw new PullRequestReviewPipelineError(
+          "PR_CONTEXT_FAILED",
+          `Pull request context failed [${error.code}]: ${error.message}`,
+        );
+      }
+
+      const details = error instanceof Error ? error.message : "Unknown error";
+
       throw new PullRequestReviewPipelineError(
         "PR_CONTEXT_FAILED",
-        "Unable to retrieve the pull request review context.",
+        `Unable to retrieve the pull request review context: ${details}`,
       );
     }
 
