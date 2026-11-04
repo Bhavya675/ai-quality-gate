@@ -47,6 +47,13 @@ jobs:
           echo "File details:"
           ls -l docs/review-guidelines.md
 
+      - name: Calculate review guidelines hash
+        shell: bash
+        run: |
+          GUIDELINES_SHA=$(sha256sum docs/review-guidelines.md | cut -d ' ' -f 1)
+          echo "REVIEW_GUIDELINES_SHA=$GUIDELINES_SHA" >> "$GITHUB_ENV"
+          echo "Review guidelines SHA: $GUIDELINES_SHA"
+
       - name: Run AI pull-request review
         run: npm run review
         env:
@@ -56,4 +63,3 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REVIEW_STATE_SIGNING_SECRET: ${{ secrets.REVIEW_STATE_SIGNING_SECRET }}
           REVIEW_POLICY_VERSION: 1.0.0
-          REVIEW_GUIDELINES_SHA: ${{ hashFiles('docs/review-guidelines.md') }}"
