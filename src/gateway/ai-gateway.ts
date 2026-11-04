@@ -96,6 +96,27 @@ export class AiGateway {
         throw error;
       }
 
+      const rawMessage =
+        error instanceof Error ? error.message : "Unknown provider error";
+
+      // Redact common credential formats before logging.
+      const safeMessage = rawMessage
+        .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED_API_KEY]")
+        .replace(/([?&]key=)[^&\s]+/gi, "$1[REDACTED]")
+        .replace(/(Bearer\s+)\S+/gi, "$1[REDACTED]")
+        .slice(0, 1000);
+
+      const status =
+        typeof error === "object" && error !== null && "status" in error
+          ? (error as { status?: unknown }).status
+          : undefined;
+
+      console.error("[AiGateway] Gemini provider request failed.", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        status,
+        message: safeMessage,
+      });
+
       throw new AiGatewayError(
         "PROVIDER_ERROR",
         "AI provider execution failed.",
