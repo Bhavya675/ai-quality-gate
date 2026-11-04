@@ -1,4 +1,4 @@
-import type { AiReviewRequest } from "../gateway/ai-gateway.js";
+import { AiGatewayError, type AiReviewRequest } from "../gateway/ai-gateway.js";
 import type { ReviewFinding } from "../validation/review-result.js";
 import type { ResolutionEvidence } from "./finding-resolution-verifier.js";
 import type { ReviewService, CompletedReview } from "./review-service.js";
@@ -82,7 +82,19 @@ export class ReviewStateCoordinator {
         previousFindings,
         resolutionEvidence,
       );
-    } catch {
+    } catch (error) {
+      let diagnosticMessage: string;
+
+      if (error instanceof AiGatewayError) {
+        diagnosticMessage = `AI Gateway error [${error.code}]: ${error.message}`;
+      } else if (error instanceof Error) {
+        diagnosticMessage = `${error.name}: ${error.message}`;
+      } else {
+        diagnosticMessage = "Unknown review execution error.";
+      }
+
+      console.error(`[ReviewStateCoordinator] ${diagnosticMessage}`);
+
       throw new ReviewStateCoordinatorError(
         "REVIEW_FAILED",
         "Review execution failed.",
