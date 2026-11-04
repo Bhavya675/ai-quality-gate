@@ -38,6 +38,15 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      - name: Debug review guidelines hash
+        shell: bash
+        run: |
+          echo "GitHub hashFiles result: ${{ hashFiles('docs/review-guidelines.md') }}"
+          echo "SHA256 via sha256sum:"
+          sha256sum docs/review-guidelines.md
+          echo "File details:"
+          ls -l docs/review-guidelines.md
+
       - name: Run AI pull-request review
         run: npm run review
         env:
@@ -47,13 +56,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REVIEW_STATE_SIGNING_SECRET: ${{ secrets.REVIEW_STATE_SIGNING_SECRET }}
           REVIEW_POLICY_VERSION: 1.0.0
-          REVIEW_GUIDELINES_SHA: d37820120d780bf0fea426797be079da2415d1c11aae1d15ba3956d8c32a3fd8
-
-      - name: Debug review guidelines hash
-        shell: bash
-        run: |
-          echo "GitHub hashFiles result: ${{ hashFiles('docs/review-guidelines.md') }}"
-          echo "SHA256 via sha256sum:"
-          sha256sum docs/review-guidelines.md
-          echo "File details:"
-          ls -l docs/review-guidelines.md
+          REVIEW_GUIDELINES_SHA: ${{ hashFiles('docs/review-guidelines.md') }}"
