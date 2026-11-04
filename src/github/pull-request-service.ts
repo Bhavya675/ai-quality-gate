@@ -168,9 +168,12 @@ export class PullRequestService {
         throw error;
       }
 
+      const details =
+        error instanceof Error ? error.message : "Unknown GitHub API error";
+
       throw new PullRequestServiceError(
         "GITHUB_API_FAILED",
-        "Unable to retrieve pull request information from GitHub.",
+        `Unable to retrieve pull request information from GitHub: ${details}`,
       );
     }
   }

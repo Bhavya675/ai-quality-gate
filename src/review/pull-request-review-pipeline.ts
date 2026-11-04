@@ -6,9 +6,10 @@ import {
   PullRequestReviewGuard,
   assertHeadShaCurrent,
 } from "../github/pull-request-review-guard.js";
-import type {
-  PullRequestService,
-  PullRequestContext,
+import {
+  PullRequestServiceError,
+  type PullRequestService,
+  type PullRequestContext,
 } from "../github/pull-request-service.js";
 import type {
   PullRequestSourceService,
@@ -96,7 +97,13 @@ export class PullRequestReviewPipeline {
         );
       }
 
-      throw error;
+      const details =
+        error instanceof Error ? error.message : "Unknown event parsing error";
+
+      throw new PullRequestReviewPipelineError(
+        "INVALID_EVENT",
+        `Unable to parse GitHub pull request event: ${details}`,
+      );
     }
 
     if (!parsedEvent.accepted) {
