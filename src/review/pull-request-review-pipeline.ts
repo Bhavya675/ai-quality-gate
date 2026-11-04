@@ -134,8 +134,15 @@ export class PullRequestReviewPipeline {
     let pullRequest: PullRequestContext;
 
     try {
-      pullRequest =
-        await this.dependencies.pullRequestService.getReviewContext(event);
+      // pullRequest =
+      //   await this.dependencies.pullRequestService.getReviewContext(event);
+      pullRequest = await this.dependencies.pullRequestService.getReviewContext(
+        {
+          owner: event.owner,
+          repository: event.repository,
+          pullRequestNumber: event.pullRequestNumber,
+        },
+      );
     } catch (error) {
       if (error instanceof PullRequestServiceError) {
         throw new PullRequestReviewPipelineError(

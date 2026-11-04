@@ -239,7 +239,11 @@ describe("PullRequestReviewPipeline", () => {
       expect.any(Function),
     );
 
-    expect(mocks.pullRequestService.getReviewContext).toHaveBeenCalled();
+    expect(mocks.pullRequestService.getReviewContext).toHaveBeenCalledWith({
+      owner: "Bhavya675",
+      repository: "ai-quality-gate",
+      pullRequestNumber: 12,
+    });
     expect(mocks.policyEngine.evaluate).toHaveBeenCalled();
     expect(mocks.sourceService.retrieve).toHaveBeenCalledWith(
       "Bhavya675",
