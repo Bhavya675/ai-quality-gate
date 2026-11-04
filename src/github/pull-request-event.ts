@@ -10,7 +10,7 @@ const GitHubPullRequestEventSchema = z
           .object({
             login: z.string().min(1),
           })
-          .strict(),
+          .passthrough(),
       })
       .passthrough(),
     pull_request: z
@@ -76,8 +76,15 @@ export function parsePullRequestEvent(
   const validation = GitHubPullRequestEventSchema.safeParse(payload);
 
   if (!validation.success) {
+    const details = validation.error.issues
+      .map((issue) => {
+        const path = issue.path.join(".") || "<root>";
+        return `${path}: ${issue.message}`;
+      })
+      .join("; ");
+
     throw new PullRequestEventError(
-      "Invalid GitHub pull request event payload.",
+      `Invalid GitHub pull request event payload: ${details}`,
     );
   }
 

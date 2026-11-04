@@ -139,7 +139,9 @@ describe("ReviewService", () => {
     const result = await service.review(request);
 
     expect(result.review.findings).toHaveLength(2);
-    expect(result.review.findings.every((finding) => finding.status === "open")).toBe(true);
+    expect(
+      result.review.findings.every((finding) => finding.status === "open"),
+    ).toBe(true);
     expect(result.verdict.blockerCount).toBe(1);
     expect(result.verdict.verdict).toBe("FAIL");
   });
@@ -454,12 +456,27 @@ describe("ReviewService", () => {
 
     previousFinding.id = generateFindingId(previousFinding);
 
-    const service = createService(JSON.stringify(validAiReview));
+    const currentFinding = createFinding(
+      "BLOCKER",
+      "new-ai-id",
+      "open",
+      "Missing authorization",
+    );
+
+    const service = createService(
+      JSON.stringify({
+        ...validAiReview,
+        findings: [currentFinding],
+      }),
+    );
 
     const result = await service.review(request, [previousFinding]);
 
     expect(result.review.findings).toHaveLength(1);
     expect(result.review.findings[0].status).toBe("open");
+    expect(result.review.findings[0].id).toBe(previousFinding.id);
+    expect(result.review.findings[0].occurrence).toBe("previously_reported");
+    expect(result.verdict.blockerCount).toBe(1);
     expect(result.verdict.verdict).toBe("FAIL");
   });
 });
