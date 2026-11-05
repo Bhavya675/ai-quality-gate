@@ -12,7 +12,7 @@ on:
         description: "Gemini model used for code review"
         required: false
         type: string
-        default: "gemini-2.5-flash"
+        default: "gemini-3.1-flash-lite"
 
       review_policy_version:
         description: "Version of the review policy"
