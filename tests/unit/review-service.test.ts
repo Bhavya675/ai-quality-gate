@@ -57,7 +57,7 @@ function createService(responseContent: string) {
     review: vi.fn().mockResolvedValue({
       content: responseContent,
       provider: "gemini",
-      model: "gemini-2.5-flash",
+      model: "gemini-3.1-flash-lite",
     }),
   } as unknown as AiGateway;
 
