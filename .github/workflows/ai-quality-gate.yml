@@ -22,7 +22,7 @@ jobs:
       # Run trusted engine code from the PR's base commit.
       engine_ref: ${{ github.event.pull_request.base.sha }}
 
-      gemini_model: gemini-3.6-flash
+      gemini_model: gemini-2.5-flash
 
       review_policy_version: "1.0.0"
 
