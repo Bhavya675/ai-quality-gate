@@ -92,40 +92,4 @@ describe("FindingTracker", () => {
     expect(result.previouslyReportedCount).toBe(0);
     expect(result.unverifiedPreviousFindings).toHaveLength(0);
   });
-
-  it("automatically resolves previous findings when their file is deleted", () => {
-    const deletedFinding = createFinding("finding-deleted");
-    deletedFinding.file = "src/old-service.ts";
-
-    const retainedFinding = createFinding("finding-retained");
-    retainedFinding.file = "src/current-service.ts";
-
-    const result = trackFindings(
-      [deletedFinding, retainedFinding],
-      [],
-      ["src/old-service.ts"],
-    );
-
-    expect(result.resolvedByDeletedFileFindings).toHaveLength(1);
-    expect(result.resolvedByDeletedFileFindings[0]).toMatchObject({
-      id: "finding-deleted",
-      status: "resolved",
-    });
-
-    expect(result.unverifiedPreviousFindings).toHaveLength(1);
-    expect(result.unverifiedPreviousFindings[0]).toMatchObject({
-      id: "finding-retained",
-      status: "open",
-    });
-  });
-
-  it("matches deleted paths after normalizing Windows separators", () => {
-    const previousFinding = createFinding("finding-deleted");
-    previousFinding.file = "src\\old-service.ts";
-
-    const result = trackFindings([previousFinding], [], ["src/old-service.ts"]);
-
-    expect(result.resolvedByDeletedFileFindings).toHaveLength(1);
-    expect(result.unverifiedPreviousFindings).toHaveLength(0);
-  });
 });

@@ -56,7 +56,6 @@ export class ReviewService {
     request: AiReviewRequest,
     previousFindings: ReviewFinding[] = [],
     resolutionEvidence: ResolutionEvidence[] = [],
-    deletedFilePaths: string[] = [],
   ): Promise<CompletedReview> {
     const response = await this.gateway.review(request);
 
@@ -102,11 +101,7 @@ export class ReviewService {
     const deduplication = deduplicateFindings(aiFindings);
 
     // 2. Compare current findings with previous findings.
-    const tracking = trackFindings(
-      previousFindings,
-      deduplication.findings,
-      deletedFilePaths,
-    );
+    const tracking = trackFindings(previousFindings, deduplication.findings);
 
     // 3. Index resolution evidence by finding ID.
     const unverifiedPreviousFindings = tracking.unverifiedPreviousFindings;
@@ -168,7 +163,6 @@ export class ReviewService {
     // 5. Combine current findings with previous findings.
     const combinedFindings = [
       ...tracking.currentFindings,
-      ...tracking.resolvedByDeletedFileFindings,
       ...processedPreviousFindings,
     ];
 

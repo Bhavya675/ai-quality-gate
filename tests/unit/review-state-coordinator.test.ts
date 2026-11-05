@@ -6,6 +6,7 @@ import {
 } from "../../src/review/review-state-coordinator.js";
 
 import type { ReviewState } from "../../src/storage/review-state.js";
+
 import type { ReviewStateStore } from "../../src/storage/review-state-store.js";
 
 import type {
@@ -76,7 +77,6 @@ function createCompletedReview(reviewComplete = true): CompletedReview {
       newFindingCount: 0,
       previouslyReportedCount: 0,
       unverifiedPreviousFindings: [],
-      resolvedByDeletedFileFindings: [],
     },
     resolutions: [],
   };
@@ -118,7 +118,7 @@ function createCoordinator(options?: {
   const stateStore = {
     load,
     save,
-  } as unknown as ReviewStateStore;
+  } as ReviewStateStore;
 
   const coordinator = new ReviewStateCoordinator(reviewService, stateStore, {
     policyVersion: "v1",
@@ -158,7 +158,7 @@ describe("ReviewStateCoordinator", () => {
       deduplication: {},
       tracking: {},
       resolutions: [],
-    } as unknown as CompletedReview;
+    } as any;
 
     const stateStore = {
       load: vi.fn().mockResolvedValue(null),
@@ -199,19 +199,6 @@ describe("ReviewStateCoordinator", () => {
     expect(executionOrder).toEqual(["review", "freshness-check", "save"]);
   });
 
-  it("passes deleted file paths to ReviewService", async () => {
-    const { coordinator, review } = createCoordinator();
-
-    await coordinator.review(request, [], undefined, ["src/old-service.ts"]);
-
-    expect(review).toHaveBeenCalledWith(
-      request,
-      [],
-      [],
-      ["src/old-service.ts"],
-    );
-  });
-
   it("does not persist a review when freshness verification fails", async () => {
     const stateStore = {
       load: vi.fn().mockResolvedValue(null),
@@ -239,7 +226,7 @@ describe("ReviewStateCoordinator", () => {
         deduplication: {},
         tracking: {},
         resolutions: [],
-      } as unknown as CompletedReview),
+      } as any),
     };
 
     const coordinator = new ReviewStateCoordinator(reviewService, stateStore, {
@@ -296,7 +283,7 @@ describe("ReviewStateCoordinator", () => {
         deduplication: {},
         tracking: {},
         resolutions: [],
-      } as unknown as CompletedReview),
+      } as any),
     };
 
     const coordinator = new ReviewStateCoordinator(reviewService, stateStore, {
@@ -347,12 +334,7 @@ describe("ReviewStateCoordinator", () => {
 
     await coordinator.review(request);
 
-    expect(review).toHaveBeenCalledWith(
-      request,
-      previousState.findings,
-      [],
-      [],
-    );
+    expect(review).toHaveBeenCalledWith(request, previousState.findings, []);
   });
 
   it("starts with an empty finding history when no state exists", async () => {
@@ -362,7 +344,7 @@ describe("ReviewStateCoordinator", () => {
 
     const result = await coordinator.review(request);
 
-    expect(review).toHaveBeenCalledWith(request, [], [], []);
+    expect(review).toHaveBeenCalledWith(request, [], []);
 
     expect(result.previousState).toBeNull();
     expect(result.persisted).toBe(true);

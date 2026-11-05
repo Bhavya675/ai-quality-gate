@@ -55,7 +55,6 @@ export class ReviewStateCoordinator {
     request: AiReviewRequest,
     resolutionEvidence: ResolutionEvidence[] = [],
     beforePersist?: BeforePersistReview,
-    deletedFilePaths: string[] = [],
   ): Promise<CoordinatedReview> {
     const key: ReviewStateKey = {
       repository: request.repository,
@@ -82,7 +81,6 @@ export class ReviewStateCoordinator {
         request,
         previousFindings,
         resolutionEvidence,
-        deletedFilePaths,
       );
     } catch (error) {
       let diagnosticMessage: string;
