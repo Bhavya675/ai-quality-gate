@@ -47,6 +47,35 @@ jobs:
     steps:
       # Always execute trusted central-engine code.
       # Never check out or execute the PR's source code.
+
+      - name: Validate pull request source
+        shell: bash
+        env:
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          PR_BASE_REPOSITORY: ${{ github.repository }}
+          PR_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$PR_ACTOR" == "dependabot[bot]" ]]; then
+            echo "::error::Dependabot PRs are not supported by this secret-dependent AI review workflow."
+            exit 1
+          fi
+
+          if [[ -z "$PR_HEAD_REPOSITORY" ]]; then
+            echo "::error::Unable to identify the pull request source repository."
+            exit 1
+          fi
+
+          if [[ "$PR_HEAD_REPOSITORY" != "$PR_BASE_REPOSITORY" ]]; then
+            echo "::error::Fork pull requests are not supported by this AI Quality Gate configuration."
+            echo "::error::The required check is failing closed. No repository secrets are exposed."
+            exit 1
+          fi
+
+          echo "Pull request source validated."
+          echo "Source repository: $PR_HEAD_REPOSITORY"
+
       - name: Check out trusted AI Quality Gate engine
         uses: actions/checkout@v4
         with:
