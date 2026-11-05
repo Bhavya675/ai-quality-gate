@@ -13,17 +13,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validate-pr-source:
+    name: Validate PR source
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate pull request source
+        shell: bash
+        env:
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          PR_BASE_REPOSITORY: ${{ github.repository }}
+          PR_ACTOR: ${{ github.actor }}
+
+        run: |
+          set -euo pipefail
+
+          if [[ "$PR_ACTOR" == "dependabot[bot]" ]]; then
+            echo "::error::Dependabot PRs are not supported by this secret-dependent AI review workflow."
+            exit 1
+          fi
+
+          if [[ -z "$PR_HEAD_REPOSITORY" ]]; then
+            echo "::error::Unable to identify the pull request source repository."
+            exit 1
+          fi
+
+          if [[ "$PR_HEAD_REPOSITORY" != "$PR_BASE_REPOSITORY" ]]; then
+            echo "::error::Fork pull requests are not supported by this AI Quality Gate configuration."
+            exit 1
+          fi
+
+          echo "Pull request source validation passed."
+          echo "Repository: $PR_HEAD_REPOSITORY"
+
   ai-quality-gate:
     name: AI Quality Gate
 
     uses: ./.github/workflows/ai-quality-gate-reusable.yml
 
     with:
-      # Run trusted engine code from the PR's base commit.
       engine_ref: ${{ github.event.pull_request.base.sha }}
-
       gemini_model: gemini-3.1-flash-lite
-
       review_policy_version: "1.0.0"
 
     permissions:
