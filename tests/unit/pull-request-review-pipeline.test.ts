@@ -380,4 +380,33 @@ describe("PullRequestReviewPipeline", () => {
 
     expect(mocks.reviewStateCoordinator.review).not.toHaveBeenCalled();
   });
+
+  it("passes deleted PR file paths to the review coordinator", async () => {
+    const mocks = createDependencies();
+
+    mocks.pullRequestService.getReviewContext.mockResolvedValue({
+      ...createPullRequest(),
+      files: [
+        ...createPullRequest().files,
+        {
+          filename: "src/old-service.ts",
+          status: "removed",
+          additions: 0,
+          deletions: 25,
+          changes: 25,
+        },
+      ],
+    });
+
+    const pipeline = new PullRequestReviewPipeline(mocks.dependencies);
+
+    await pipeline.execute(createEvent());
+
+    expect(mocks.reviewStateCoordinator.review).toHaveBeenCalledWith(
+      expect.any(Object),
+      [],
+      expect.any(Function),
+      ["src/old-service.ts"],
+    );
+  });
 });
