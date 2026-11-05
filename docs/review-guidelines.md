@@ -58,22 +58,25 @@ Every finding must:
 
 Do not report style-only preferences as blockers.
 
-## GitHub Actions reusable workflow rules
+## GitHub Actions reusable workflow validation
 
-1. A job invoking a reusable workflow through `jobs.<job_id>.uses`
-   may define `permissions` at the job level. Do not report this
-   as an invalid configuration merely because the job uses a
-   reusable workflow.
+1. A job calling a reusable workflow using the `uses` keyword may
+   legitimately declare `permissions` at the job level.
 
-2. Validate GitHub Actions syntax against the official GitHub
-   Actions documentation before reporting configuration errors.
+2. The permissions block must be a sibling of `uses`, `name`,
+   and `with` under the same job.
 
-3. Fork pull requests triggered by `pull_request` do not receive
-   repository secrets and normally receive a read-only GITHUB_TOKEN.
+3. Do not report a permissions block as invalid merely because
+   the job uses a reusable workflow.
 
-4. Never recommend skipping a required quality-gate job using
-   a conditional merely to exclude fork pull requests. A skipped
-   job can report success and undermine required status checks.
+4. Validate GitHub Actions syntax against official GitHub
+   documentation before reporting a configuration blocker.
 
-5. Unsupported PR sources must fail explicitly through a
-   preflight validation step. Do not silently skip security checks.
+5. The AI Quality Gate entry workflow uses a dedicated
+   "Validate PR source" job to reject fork and Dependabot PRs.
+
+6. The reusable workflow also performs its own source validation
+   before checking out the private engine or executing the review.
+
+7. Do not recommend skipping required security jobs using
+   job-level conditions.
