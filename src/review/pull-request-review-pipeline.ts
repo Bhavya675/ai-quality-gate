@@ -2,26 +2,32 @@ import {
   parsePullRequestEvent,
   PullRequestEventError,
 } from "../github/pull-request-event.js";
+
 import {
   PullRequestReviewGuard,
   assertHeadShaCurrent,
 } from "../github/pull-request-review-guard.js";
+
 import {
   PullRequestServiceError,
   type PullRequestService,
   type PullRequestContext,
 } from "../github/pull-request-service.js";
+
 import type {
   PullRequestSourceService,
   SourceRetrievalResult,
 } from "../github/pull-request-source-service.js";
+
 import type { ReviewPolicyEngine } from "./review-policy-engine.js";
+
 import {
   ReviewContextBuilder,
   type BuiltReviewContext,
 } from "./review-context-builder.js";
-import type { ReviewFinding } from "../validation/review-result.js";
+
 import type { ResolutionEvidence } from "./finding-resolution-verifier.js";
+
 import {
   ReviewStateCoordinatorError,
   type ReviewStateCoordinator,
@@ -30,17 +36,25 @@ import {
 
 export interface PullRequestReviewPipelineDependencies {
   pullRequestService: Pick<PullRequestService, "getReviewContext">;
+
   sourceService: Pick<PullRequestSourceService, "retrieve">;
+
   policyEngine: Pick<ReviewPolicyEngine, "evaluate">;
+
   contextBuilder: Pick<ReviewContextBuilder, "build">;
+
   reviewStateCoordinator: Pick<ReviewStateCoordinator, "review">;
+
   reviewGuard: Pick<PullRequestReviewGuard, "runExclusive">;
+
   getLatestHeadSha: (
     owner: string,
     repository: string,
     pullRequestNumber: number,
   ) => Promise<string>;
+
   guidelines: string;
+
   policyVersion: string;
 }
 
@@ -134,8 +148,7 @@ export class PullRequestReviewPipeline {
     let pullRequest: PullRequestContext;
 
     try {
-      // pullRequest =
-      //   await this.dependencies.pullRequestService.getReviewContext(event);
+      // Pass only the fields required by PullRequestService.
       pullRequest = await this.dependencies.pullRequestService.getReviewContext(
         {
           owner: event.owner,
@@ -158,6 +171,12 @@ export class PullRequestReviewPipeline {
         `Unable to retrieve the pull request review context: ${details}`,
       );
     }
+
+    // Resolve previous findings only when GitHub confirms
+    // that their referenced file was removed in this PR.
+    const deletedFilePaths = pullRequest.files
+      .filter((file) => file.status === "removed")
+      .map((file) => file.filename);
 
     const policy = this.dependencies.policyEngine.evaluate(pullRequest.files);
 
@@ -242,6 +261,7 @@ export class PullRequestReviewPipeline {
             );
           }
         },
+        deletedFilePaths,
       );
     } catch (error) {
       if (error instanceof PullRequestReviewPipelineError) {
