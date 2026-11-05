@@ -1,0 +1,104 @@
+name: AI Quality Gate Reusable
+
+on:
+  workflow_call:
+    inputs:
+      engine_ref:
+        description: "Trusted commit SHA or version tag of the central AI Quality Gate engine"
+        required: true
+        type: string
+
+      gemini_model:
+        description: "Gemini model used for code review"
+        required: false
+        type: string
+        default: "gemini-3.6-flash"
+
+      review_policy_version:
+        description: "Version of the review policy"
+        required: false
+        type: string
+        default: "1.0.0"
+
+    secrets:
+      GEMINI_API_KEY:
+        description: "Gemini API key"
+        required: true
+
+      REVIEW_STATE_SIGNING_SECRET:
+        description: "Secret used to sign persisted review state"
+        required: true
+
+      AI_GATE_REPO_READ_TOKEN:
+        description: "Read-only token for checking out the private central engine repository"
+        required: false
+
+jobs:
+  ai-quality-gate:
+    name: AI Quality Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      # Always execute trusted central-engine code.
+      # Never check out or execute the PR's source code.
+      - name: Check out trusted AI Quality Gate engine
+        uses: actions/checkout@v4
+        with:
+          repository: Bhavya675/ai-quality-gate
+          ref: ${{ inputs.engine_ref }}
+          token: ${{ secrets.AI_GATE_REPO_READ_TOKEN || github.token }}
+          path: ai-quality-gate
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ai-quality-gate/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ai-quality-gate
+        run: npm ci
+
+      - name: Build TypeScript
+        working-directory: ai-quality-gate
+        run: npm run build
+
+      - name: Calculate review guidelines hash
+        id: guidelines
+        working-directory: ai-quality-gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f docs/review-guidelines.md
+
+          GUIDELINES_SHA=$(sha256sum docs/review-guidelines.md | awk '{print $1}')
+
+          echo "sha=$GUIDELINES_SHA" >> "$GITHUB_OUTPUT"
+
+          echo "Review guidelines SHA: $GUIDELINES_SHA"
+
+      - name: Run AI pull-request review
+        working-directory: ai-quality-gate
+        run: npm run review
+        env:
+          NODE_ENV: production
+
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ inputs.gemini_model }}
+
+          GITHUB_TOKEN: ${{ github.token }}
+
+          REVIEW_STATE_SIGNING_SECRET: ${{ secrets.REVIEW_STATE_SIGNING_SECRET }}
+
+          REVIEW_POLICY_VERSION: ${{ inputs.review_policy_version }}
+
+          REVIEW_GUIDELINES_SHA: ${{ steps.guidelines.outputs.sha }}
