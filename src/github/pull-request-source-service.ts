@@ -8,6 +8,12 @@ const SourceFileResponseSchema = z.object({
   size: z.number().int().nonnegative(),
 });
 
+const ExistingPathResponseSchema = z
+  .object({
+    type: z.string(),
+  })
+  .passthrough();
+
 const CommitShaSchema = z.string().regex(/^[a-fA-F0-9]{40}$/);
 
 export interface SourceFile {
@@ -76,9 +82,19 @@ function validatePath(path: string): void {
   ) {
     throw new PullRequestSourceServiceError(
       "INVALID_INPUT",
-      "Invalid changed-file path.",
+      "Invalid source-file path.",
     );
   }
+}
+
+function getHttpStatus(error: unknown): number | undefined {
+  if (typeof error === "object" && error !== null && "status" in error) {
+    const status = (error as { status?: unknown }).status;
+
+    return typeof status === "number" ? status : undefined;
+  }
+
+  return undefined;
 }
 
 function decodeText(content: string): Buffer {
@@ -113,9 +129,7 @@ export class PullRequestSourceService {
     options: SourceRetrievalOptions = {},
   ) {
     this.maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
-
     this.maxTotalBytes = options.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
-
     this.concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
 
     if (
@@ -128,6 +142,109 @@ export class PullRequestSourceService {
     ) {
       throw new Error("Invalid source retrieval configuration.");
     }
+  }
+
+  /**
+   * Checks whether previous finding paths still exist as regular files
+   * at the supplied commit.
+   *
+   * A GitHub 404 or a directory/non-file response means that the
+   * previous source-file path no longer exists as a regular file.
+   *
+   * Other API failures are not treated as missing files.
+   */
+  async findMissingPaths(
+    owner: string,
+    repository: string,
+    headSha: string,
+    filePaths: string[],
+  ): Promise<string[]> {
+    if (
+      !owner.trim() ||
+      !repository.trim() ||
+      !CommitShaSchema.safeParse(headSha).success
+    ) {
+      throw new PullRequestSourceServiceError(
+        "INVALID_INPUT",
+        "Invalid repository identity or head commit SHA.",
+      );
+    }
+
+    const uniquePaths = [...new Set(filePaths)];
+
+    for (const path of uniquePaths) {
+      validatePath(path);
+    }
+
+    if (uniquePaths.length === 0) {
+      return [];
+    }
+
+    const missingPaths = new Set<string>();
+    let nextIndex = 0;
+
+    const workers = Array.from(
+      { length: Math.min(this.concurrency, uniquePaths.length) },
+      async () => {
+        while (true) {
+          const index = nextIndex++;
+
+          if (index >= uniquePaths.length) {
+            return;
+          }
+
+          const path = uniquePaths[index];
+
+          let response: { data: unknown };
+
+          try {
+            response = await this.github.rest.repos.getContent({
+              owner,
+              repo: repository,
+              path,
+              ref: headSha,
+            });
+          } catch (error) {
+            if (getHttpStatus(error) === 404) {
+              missingPaths.add(path);
+              continue;
+            }
+
+            throw new PullRequestSourceServiceError(
+              "GITHUB_API_FAILED",
+              "Unable to verify a previous finding path at the current pull request commit.",
+            );
+          }
+
+          // GitHub returns an array for directory contents.
+          // A previous finding path must still be a regular file.
+          if (Array.isArray(response.data)) {
+            missingPaths.add(path);
+            continue;
+          }
+
+          const validation = ExistingPathResponseSchema.safeParse(
+            response.data,
+          );
+
+          if (!validation.success) {
+            throw new PullRequestSourceServiceError(
+              "INVALID_GITHUB_RESPONSE",
+              "GitHub returned an invalid path-existence response.",
+            );
+          }
+
+          if (validation.data.type !== "file") {
+            missingPaths.add(path);
+          }
+        }
+      },
+    );
+
+    await Promise.all(workers);
+
+    // Preserve the original input order.
+    return uniquePaths.filter((path) => missingPaths.has(path));
   }
 
   async retrieve(

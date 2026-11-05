@@ -1,12 +1,13 @@
 import { AiGatewayError, type AiReviewRequest } from "../gateway/ai-gateway.js";
+
 import type { ReviewFinding } from "../validation/review-result.js";
 import type { ResolutionEvidence } from "./finding-resolution-verifier.js";
+
 import type { ReviewService, CompletedReview } from "./review-service.js";
+
 import type { ReviewState, ReviewStateKey } from "../storage/review-state.js";
-import {
-  ReviewStateStoreError,
-  type ReviewStateStore,
-} from "../storage/review-state-store.js";
+
+import type { ReviewStateStore } from "../storage/review-state-store.js";
 
 export interface ReviewStateCoordinatorOptions {
   policyVersion: string;
@@ -16,6 +17,8 @@ export interface ReviewStateCoordinatorOptions {
 export type BeforePersistReview = (
   completedReview: CompletedReview,
 ) => Promise<void>;
+
+export type FindMissingFindingFiles = (paths: string[]) => Promise<string[]>;
 
 export interface CoordinatedReview {
   completedReview: CompletedReview;
@@ -28,12 +31,20 @@ export class ReviewStateCoordinatorError extends Error {
     public readonly code:
       | "REVIEW_FAILED"
       | "STATE_LOAD_FAILED"
-      | "STATE_SAVE_FAILED",
+      | "STATE_SAVE_FAILED"
+      | "PREVIOUS_FILE_CHECK_FAILED",
     message: string,
   ) {
     super(message);
     this.name = "ReviewStateCoordinatorError";
   }
+}
+
+function normalizePath(path: string): string {
+  return path
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^(?:\.\/)+/, "");
 }
 
 export class ReviewStateCoordinator {
@@ -56,6 +67,7 @@ export class ReviewStateCoordinator {
     resolutionEvidence: ResolutionEvidence[] = [],
     beforePersist?: BeforePersistReview,
     deletedFilePaths: string[] = [],
+    findMissingFindingFiles?: FindMissingFindingFiles,
   ): Promise<CoordinatedReview> {
     const key: ReviewStateKey = {
       repository: request.repository,
@@ -66,7 +78,12 @@ export class ReviewStateCoordinator {
 
     try {
       previousState = await this.stateStore.load(key);
-    } catch {
+    } catch (error) {
+      console.error(
+        "[ReviewStateCoordinator] Previous review state load failed.",
+        error instanceof Error ? error.message : "Unknown error",
+      );
+
       throw new ReviewStateCoordinatorError(
         "STATE_LOAD_FAILED",
         "Unable to load previous review state.",
@@ -75,6 +92,40 @@ export class ReviewStateCoordinator {
 
     const previousFindings: ReviewFinding[] = previousState?.findings ?? [];
 
+    const previousOpenFilePaths = [
+      ...new Set(
+        previousFindings
+          .filter((finding) => finding.status === "open")
+          .map((finding) => normalizePath(finding.file)),
+      ),
+    ];
+
+    let missingPreviousFilePaths: string[] = [];
+
+    if (findMissingFindingFiles && previousOpenFilePaths.length > 0) {
+      try {
+        missingPreviousFilePaths = await findMissingFindingFiles(
+          previousOpenFilePaths,
+        );
+      } catch (error) {
+        console.error(
+          "[ReviewStateCoordinator] Previous finding file check failed.",
+          error instanceof Error ? error.message : "Unknown error",
+        );
+
+        throw new ReviewStateCoordinatorError(
+          "PREVIOUS_FILE_CHECK_FAILED",
+          "Unable to verify previous finding file paths at the current commit.",
+        );
+      }
+    }
+
+    const pathsToResolve = [
+      ...new Set(
+        [...deletedFilePaths, ...missingPreviousFilePaths].map(normalizePath),
+      ),
+    ];
+
     let completedReview: CompletedReview;
 
     try {
@@ -82,7 +133,7 @@ export class ReviewStateCoordinator {
         request,
         previousFindings,
         resolutionEvidence,
-        deletedFilePaths,
+        pathsToResolve,
       );
     } catch (error) {
       let diagnosticMessage: string;
@@ -132,7 +183,12 @@ export class ReviewStateCoordinator {
 
     try {
       await this.stateStore.save(nextState);
-    } catch {
+    } catch (error) {
+      console.error(
+        "[ReviewStateCoordinator] Review state save failed.",
+        error instanceof Error ? error.message : "Unknown error",
+      );
+
       throw new ReviewStateCoordinatorError(
         "STATE_SAVE_FAILED",
         "Unable to persist completed review state.",

@@ -407,6 +407,7 @@ describe("PullRequestReviewPipeline", () => {
       [],
       expect.any(Function),
       ["src/old-service.ts"],
+      expect.any(Function),
     );
   });
 });

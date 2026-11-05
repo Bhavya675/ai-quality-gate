@@ -37,7 +37,10 @@ import {
 export interface PullRequestReviewPipelineDependencies {
   pullRequestService: Pick<PullRequestService, "getReviewContext">;
 
-  sourceService: Pick<PullRequestSourceService, "retrieve">;
+  sourceService: Pick<
+    PullRequestSourceService,
+    "retrieve" | "findMissingPaths"
+  >;
 
   policyEngine: Pick<ReviewPolicyEngine, "evaluate">;
 
@@ -148,7 +151,6 @@ export class PullRequestReviewPipeline {
     let pullRequest: PullRequestContext;
 
     try {
-      // Pass only the fields required by PullRequestService.
       pullRequest = await this.dependencies.pullRequestService.getReviewContext(
         {
           owner: event.owner,
@@ -172,8 +174,7 @@ export class PullRequestReviewPipeline {
       );
     }
 
-    // Resolve previous findings only when GitHub confirms
-    // that their referenced file was removed in this PR.
+    // Files explicitly marked as removed in the final PR diff.
     const deletedFilePaths = pullRequest.files
       .filter((file) => file.status === "removed")
       .map((file) => file.filename);
@@ -262,6 +263,13 @@ export class PullRequestReviewPipeline {
           }
         },
         deletedFilePaths,
+        async (previousFindingPaths) =>
+          this.dependencies.sourceService.findMissingPaths(
+            event.owner,
+            event.repository,
+            pullRequest.headSha,
+            previousFindingPaths,
+          ),
       );
     } catch (error) {
       if (error instanceof PullRequestReviewPipelineError) {
@@ -274,7 +282,7 @@ export class PullRequestReviewPipeline {
       ) {
         throw new PullRequestReviewPipelineError(
           "REVIEW_STATE_FAILED",
-          "Unable to safely load or persist the previous review state.",
+          `Unable to safely load, verify, or persist review state: ${error.message}`,
         );
       }
 
