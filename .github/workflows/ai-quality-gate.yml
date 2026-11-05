@@ -51,6 +51,7 @@ jobs:
 
   ai-quality-gate:
     name: AI Quality Gate
+    needs: validate-pr-source
 
     uses: ./.github/workflows/ai-quality-gate-reusable.yml
 
