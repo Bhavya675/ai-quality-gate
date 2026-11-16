@@ -25,6 +25,7 @@ import {
   type ResolutionEvidence,
   type FindingResolutionResult,
 } from "./finding-resolution-verifier.js";
+import { FindingResolutionChecker } from "./ai-finding-resolution-checker.js";
 
 export class ReviewServiceError extends Error {
   constructor(
@@ -50,7 +51,10 @@ export interface CompletedReview {
 }
 
 export class ReviewService {
-  constructor(private readonly gateway: AiGateway) {}
+  constructor(
+    private readonly gateway: AiGateway,
+    private readonly resolutionChecker?: FindingResolutionChecker,
+  ) {}
 
   async review(
     request: AiReviewRequest,
@@ -165,11 +169,28 @@ export class ReviewService {
       },
     );
 
+    // 4b. Ask the grounded checker whether previous findings that the
+    // new review no longer reports are really fixed in the current source.
+    const groundedResolvedIds = await this.findGroundedResolutions(
+      request,
+      review.review_complete,
+      processedPreviousFindings.filter(
+        (finding) =>
+          finding.status === "open" && !resolutionByFindingId.has(finding.id),
+      ),
+    );
+
+    const finalPreviousFindings = processedPreviousFindings.map((finding) =>
+      groundedResolvedIds.has(finding.id)
+        ? { ...finding, status: "resolved" as const }
+        : finding,
+    );
+
     // 5. Combine current findings with previous findings.
     const combinedFindings = [
       ...tracking.currentFindings,
       ...tracking.resolvedByDeletedFileFindings,
-      ...processedPreviousFindings,
+      ...finalPreviousFindings,
     ];
 
     // 6. Separate open and resolved findings.
@@ -204,5 +225,43 @@ export class ReviewService {
       tracking,
       resolutions,
     };
+  }
+
+  /**
+   * Fail-closed: any error, unknown id or incomplete review resolves nothing.
+   */
+  private async findGroundedResolutions(
+    request: AiReviewRequest,
+    reviewComplete: boolean,
+    candidates: ReviewFinding[],
+  ): Promise<Set<string>> {
+    if (!this.resolutionChecker || !reviewComplete || candidates.length === 0) {
+      return new Set();
+    }
+
+    try {
+      const results = await this.resolutionChecker.check({
+        repository: request.repository,
+        pullRequestNumber: request.pullRequestNumber,
+        baseSha: request.baseSha,
+        headSha: request.headSha,
+        findings: candidates,
+      });
+
+      const candidateIds = new Set(candidates.map((finding) => finding.id));
+
+      return new Set(
+        results
+          .map((result: any) => result.findingId)
+          .filter((id: any) => candidateIds.has(id)),
+      );
+    } catch (error) {
+      console.error(
+        "[ReviewService] Finding resolution check failed; findings stay open.",
+        error instanceof Error ? error.message : "Unknown error",
+      );
+
+      return new Set();
+    }
   }
 }

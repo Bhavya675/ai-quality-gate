@@ -45,7 +45,8 @@ export class GeminiProvider implements AiProvider {
         response_format: {
           type: "text",
           mime_type: "application/json",
-          schema: ReviewResultJsonSchema,
+          schema: (request.responseSchema ??
+            ReviewResultJsonSchema) as typeof ReviewResultJsonSchema,
         },
       },
       {

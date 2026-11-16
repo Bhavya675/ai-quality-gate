@@ -15,6 +15,7 @@ import { ReviewStateCoordinator } from "./review/review-state-coordinator.js";
 import { ReviewService } from "./review/review-service.js";
 import { AiGateway } from "./gateway/ai-gateway.js";
 import { GeminiProvider } from "./gateway/providers/gemini-provider.js";
+import { AiFindingResolutionChecker } from "./review/ai-finding-resolution-checker.js";
 import type { ReviewFinding } from "./validation/review-result.js";
 
 const RESULT_MARKER = "<!-- AI_QUALITY_GATE_RESULT -->";
@@ -115,7 +116,9 @@ async function writeStepSummary(markdown: string): Promise<void> {
 async function main(): Promise<void> {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) {
-    throw new Error("GITHUB_EVENT_PATH is not set. Run this command from a GitHub Actions pull_request event.");
+    throw new Error(
+      "GITHUB_EVENT_PATH is not set. Run this command from a GitHub Actions pull_request event.",
+    );
   }
 
   const eventPayload = JSON.parse(await readFile(eventPath, "utf8")) as unknown;
@@ -124,41 +127,85 @@ async function main(): Promise<void> {
     throw new Error("GITHUB_REPOSITORY is not set.");
   }
 
-  const [ownerFromEnvironment, repositoryFromEnvironmentName] = repositoryFromEnvironment.split("/");
+  const [ownerFromEnvironment, repositoryFromEnvironmentName] =
+    repositoryFromEnvironment.split("/");
   if (!ownerFromEnvironment || !repositoryFromEnvironmentName) {
     throw new Error("GITHUB_REPOSITORY must use owner/repository format.");
   }
 
   const guidelinesPath = resolve(process.cwd(), "docs/review-guidelines.md");
   const guidelines = await readFile(guidelinesPath, "utf8");
-  const actualGuidelinesSha = createHash("sha256").update(guidelines, "utf8").digest("hex");
+  const actualGuidelinesSha = createHash("sha256")
+    .update(guidelines, "utf8")
+    .digest("hex");
   if (actualGuidelinesSha !== env.REVIEW_GUIDELINES_SHA) {
-    throw new Error("REVIEW_GUIDELINES_SHA does not match docs/review-guidelines.md. Update the configured hash.");
+    throw new Error(
+      "REVIEW_GUIDELINES_SHA does not match docs/review-guidelines.md. Update the configured hash.",
+    );
   }
 
   const octokit = createGitHubClient(env.GITHUB_TOKEN);
   const pullRequestService = new PullRequestService(octokit);
-  const reviewService = new ReviewService(
-    new AiGateway(new GeminiProvider(env.GEMINI_API_KEY, env.GEMINI_MODEL)),
+  const sourceService = new PullRequestSourceService(octokit);
+  const gateway = new AiGateway(
+    new GeminiProvider(env.GEMINI_API_KEY, env.GEMINI_MODEL),
   );
+  const resolutionChecker = new AiFindingResolutionChecker(
+    gateway,
+    async (repository, headSha, paths) => {
+      const [owner, repo] = repository.split("/");
+      const files = new Map<string, string>();
+
+      for (const path of paths) {
+        try {
+          const result = await sourceService.retrieve(owner, repo, headSha, [
+            {
+              filename: path,
+              status: "modified",
+              additions: 0,
+              deletions: 0,
+              changes: 0,
+            },
+          ]);
+
+          if (result.files[0]) {
+            files.set(path, result.files[0].content);
+          }
+        } catch {
+          // Unreadable file: its finding simply stays open.
+        }
+      }
+
+      return files;
+    },
+  );
+  const reviewService = new ReviewService(gateway, resolutionChecker);
   const stateStore = new GitHubReviewStateCommentStore(
     octokit,
     env.REVIEW_STATE_SIGNING_SECRET,
   );
-  const stateCoordinator = new ReviewStateCoordinator(reviewService, stateStore, {
-    policyVersion: env.REVIEW_POLICY_VERSION,
-    guidelinesSha: actualGuidelinesSha,
-  });
+  const stateCoordinator = new ReviewStateCoordinator(
+    reviewService,
+    stateStore,
+    {
+      policyVersion: env.REVIEW_POLICY_VERSION,
+      guidelinesSha: actualGuidelinesSha,
+    },
+  );
 
   const pipeline = new PullRequestReviewPipeline({
     pullRequestService,
-    sourceService: new PullRequestSourceService(octokit),
+    sourceService,
     policyEngine: new ReviewPolicyEngine(),
     contextBuilder: new ReviewContextBuilder(),
     reviewStateCoordinator: stateCoordinator,
     reviewGuard: new PullRequestReviewGuard(),
     getLatestHeadSha: async (owner, repository, pullRequestNumber) =>
-      pullRequestService.getLatestHeadSha({ owner, repository, pullRequestNumber }),
+      pullRequestService.getLatestHeadSha({
+        owner,
+        repository,
+        pullRequestNumber,
+      }),
     guidelines,
     policyVersion: env.REVIEW_POLICY_VERSION,
   });
@@ -200,7 +247,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : "Unexpected review execution error.";
+  const message =
+    error instanceof Error
+      ? error.message
+      : "Unexpected review execution error.";
   console.error(`AI Quality Gate failed: ${message}`);
   process.exitCode = 1;
 });
