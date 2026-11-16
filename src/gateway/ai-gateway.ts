@@ -9,6 +9,8 @@ export const AiReviewRequestSchema = z.object({
   systemPrompt: z.string().min(1),
   userPrompt: z.string().min(1),
   maxTokens: z.number().int().positive().default(8192),
+  // Optional provider response schema; defaults to the review-result schema.
+  responseSchema: z.unknown().optional(),
 });
 
 export type AiReviewRequest = z.infer<typeof AiReviewRequestSchema>;
