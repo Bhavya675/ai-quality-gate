@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { PullRequestContext } from "../github/pull-request-service.js";
 import type { SourceRetrievalResult } from "../github/pull-request-source-service.js";
 import type { ReviewPolicyResult } from "./review-policy-engine.js";
+import { addLineNumbers } from "./finding-line-grounder.js";
 
 const ReviewGuidelinesSchema = z.string().trim().min(1);
 
@@ -74,6 +75,14 @@ REVIEW RULES:
 - Do not assume code not included in the context exists or behaves in a
   particular way.
 
+LOCATION RULES:
+- Each file "source" is prefixed with its real line numbers as "N| code".
+  Use those numbers for "line" and "end_line"; never count lines yourself.
+- "line" must be the exact line containing the defective code (for example
+  the line of the call or statement), not the function or class header.
+- "evidence" must be verbatim code copied from that line, without the
+  "N| " prefix.
+
 Return only JSON matching the supplied structured response schema.
 `.trim();
 
@@ -137,7 +146,7 @@ export class ReviewContextBuilder {
             input.pullRequest.files.find(
               (candidate) => candidate.filename === file.path,
             )?.patch ?? null,
-          source: file.content,
+          source: addLineNumbers(file.content),
         };
       })
       .sort((a, b) => a.path.localeCompare(b.path));

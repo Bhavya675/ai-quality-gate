@@ -270,6 +270,7 @@ export class PullRequestReviewPipeline {
             pullRequest.headSha,
             previousFindingPaths,
           ),
+        new Map(source.files.map((file) => [file.path, file.content])),
       );
     } catch (error) {
       if (error instanceof PullRequestReviewPipelineError) {

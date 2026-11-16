@@ -63,11 +63,13 @@ export function buildFileUrl(
 
 function findingBullet(input: ResultCommentInput, finding: ReviewFinding): string {
   const label = `${escapeText(finding.file)}:${finding.line}`;
-  const link = `[\`${label.replace(/`/g, "")}\`](${buildFileUrl(input, finding)})`;
+  const fileUrl = buildFileUrl(input, finding);
   const commentUrl = input.inlineCommentUrls?.get(finding.id);
-  const chat = commentUrl ? ` [💬](${commentUrl})` : "";
+  // The main link opens the inline review comment; ↗ opens the file.
+  const link = `[\`${label.replace(/`/g, "")}\`](${commentUrl ?? fileUrl})`;
+  const fileLink = commentUrl ? ` · [↗](${fileUrl})` : "";
 
-  return `- **${escapeText(finding.title)}** · ${link}${chat}`;
+  return `- **${escapeText(finding.title)}** · ${link}${fileLink}`;
 }
 
 type CheckRow = { label: string; category: ReviewFinding["category"] };

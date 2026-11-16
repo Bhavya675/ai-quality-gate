@@ -2,7 +2,7 @@ import type { ChangedFile } from "./pull-request-service.js";
 import type { ReviewFinding } from "../validation/review-result.js";
 
 const FINDING_MARKER_PREFIX = "<!-- AI_QUALITY_GATE_FINDING:";
-const MAX_NEAREST_LINE_DISTANCE = 20;
+const MAX_NEAREST_LINE_DISTANCE = 3;
 const MAX_RANGE_LINES = 30;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -76,17 +76,17 @@ export function getCommentableLines(patch: string | undefined): Set<number> {
   return lines;
 }
 
-export interface CommentTarget {
-  line: number;
-  startLine?: number;
-}
+/** `file` = anchor on the file itself when the exact line is not in the diff. */
+export type CommentTarget =
+  | { kind: "line"; line: number; startLine?: number }
+  | { kind: "file" };
 
 export function resolveCommentTarget(
   finding: Pick<ReviewFinding, "line" | "end_line">,
   commentable: Set<number>,
-): CommentTarget | null {
+): CommentTarget {
   if (commentable.size === 0) {
-    return null;
+    return { kind: "file" };
   }
 
   const end = finding.end_line ?? finding.line;
@@ -102,12 +102,12 @@ export function resolveCommentTarget(
     }
 
     if (allInDiff) {
-      return { startLine: finding.line, line: end };
+      return { kind: "line", startLine: finding.line, line: end };
     }
   }
 
   if (commentable.has(finding.line)) {
-    return { line: finding.line };
+    return { kind: "line", line: finding.line };
   }
 
   let nearest: number | null = null;
@@ -122,7 +122,7 @@ export function resolveCommentTarget(
     }
   }
 
-  return nearest === null ? null : { line: nearest };
+  return nearest === null ? { kind: "file" } : { kind: "line", line: nearest };
 }
 
 function clean(value: string): string {
@@ -134,10 +134,19 @@ function clean(value: string): string {
     .trim();
 }
 
-export function renderInlineBody(finding: ReviewFinding): string {
+export function renderInlineBody(
+  finding: ReviewFinding,
+  fileLevel = false,
+): string {
   return [
     `${FINDING_MARKER_PREFIX}${finding.id} -->`,
     `${SEVERITY_ICON[finding.severity]} **${clean(finding.title)}**`,
+    ...(fileLevel
+      ? [
+          "",
+          `📍 Applies to \`${clean(finding.file).replace(/`/g, "")}:${finding.line}\`, which is not part of the changed lines.`,
+        ]
+      : []),
     "",
     "<details open>",
     "<summary>Finding detail</summary>",
@@ -237,7 +246,15 @@ export class InlineReviewCommentPublisher {
         continue;
       }
 
-      const body = renderInlineBody(finding);
+      const patchKnown = patchByPath.has(normalizePath(finding.file));
+      const target = patchKnown
+        ? resolveCommentTarget(
+            finding,
+            getCommentableLines(patchByPath.get(normalizePath(finding.file))),
+          )
+        : null;
+
+      const body = renderInlineBody(finding, target?.kind === "file");
 
       if (prior) {
         urls.set(finding.id, prior.url);
@@ -265,13 +282,8 @@ export class InlineReviewCommentPublisher {
         continue;
       }
 
-      const target = resolveCommentTarget(
-        finding,
-        getCommentableLines(patchByPath.get(normalizePath(finding.file))),
-      );
-
       if (!target) {
-        continue; // Not in the diff: still listed in the summary comment.
+        continue; // File not in the PR: still listed in the summary comment.
       }
 
       await this.safely("create comment", async () => {
@@ -281,11 +293,15 @@ export class InlineReviewCommentPublisher {
           pull_number: input.pullRequestNumber,
           commit_id: input.headSha,
           path: normalizePath(finding.file),
-          side: "RIGHT",
-          line: target.line,
-          ...(target.startLine
-            ? { start_line: target.startLine, start_side: "RIGHT" }
-            : {}),
+          ...(target.kind === "file"
+            ? { subject_type: "file" }
+            : {
+                side: "RIGHT",
+                line: target.line,
+                ...(target.startLine
+                  ? { start_line: target.startLine, start_side: "RIGHT" }
+                  : {}),
+              }),
           body,
         });
 

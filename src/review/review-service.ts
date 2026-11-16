@@ -21,6 +21,7 @@ import {
 import { trackFindings, type FindingTrackerResult } from "./finding-tracker.js";
 
 import type { FindingResolutionChecker } from "./ai-finding-resolution-checker.js";
+import { groundFindingLines } from "./finding-line-grounder.js";
 
 import {
   verifyFindingResolution,
@@ -62,6 +63,7 @@ export class ReviewService {
     previousFindings: ReviewFinding[] = [],
     resolutionEvidence: ResolutionEvidence[] = [],
     deletedFilePaths: string[] = [],
+    sourceByPath?: ReadonlyMap<string, string>,
   ): Promise<CompletedReview> {
     const response = await this.gateway.review(request);
 
@@ -97,7 +99,12 @@ export class ReviewService {
     // AI output is never authoritative for finding lifecycle metadata.
     // Every finding returned by the model is treated as open; only the
     // server-side tracker and a future evidence-backed verifier may change it.
-    const aiFindings = review.findings.map((finding) => ({
+    // Snap model-reported lines to where the evidence really is.
+    const locatedFindings = sourceByPath
+      ? groundFindingLines(review.findings, sourceByPath)
+      : review.findings;
+
+    const aiFindings = locatedFindings.map((finding) => ({
       ...finding,
       status: "open" as const,
       occurrence: "new" as const,
