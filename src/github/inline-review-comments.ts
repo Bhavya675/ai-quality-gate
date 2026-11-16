@@ -21,12 +21,17 @@ export interface ReviewCommentApi {
           body?: string | null;
           html_url?: string;
           user?: { type?: string } | null;
+          line?: number | null;
+          start_line?: number | null;
+          subject_type?: string | null;
+          in_reply_to_id?: number;
         }>;
       }>;
       createReviewComment(p: Record<string, unknown>): Promise<{
         data: { id: number; html_url: string };
       }>;
       updateReviewComment(p: Record<string, unknown>): Promise<unknown>;
+      deleteReviewComment(p: Record<string, unknown>): Promise<unknown>;
       createReplyForReviewComment(p: Record<string, unknown>): Promise<unknown>;
     };
   };
@@ -172,6 +177,36 @@ function extractFindingId(body: string | null | undefined): string | null {
   return end > 0 && ID_PATTERN.test(id) ? id : null;
 }
 
+interface ExistingComment {
+  id: number;
+  url: string;
+  body: string;
+  /** undefined = unknown, null = outdated (no longer on the current diff) */
+  line?: number | null;
+  startLine?: number | null;
+  subjectType?: string | null;
+  replies: number;
+}
+
+function isAnchoredAt(prior: ExistingComment, target: CommentTarget): boolean {
+  if (prior.subjectType === "file") {
+    return target.kind === "file";
+  }
+
+  if (prior.line === undefined) {
+    return true; // Unknown position: do not move it.
+  }
+
+  if (prior.line === null || target.kind !== "line") {
+    return false;
+  }
+
+  return (
+    prior.line === target.line &&
+    (prior.startLine ?? null) === (target.startLine ?? null)
+  );
+}
+
 const THREADS_QUERY = `
 query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $repo) {
@@ -257,7 +292,34 @@ export class InlineReviewCommentPublisher {
       const body = renderInlineBody(finding, target?.kind === "file");
 
       if (prior) {
-        urls.set(finding.id, prior.url);
+        const activeUrl = prior.url;
+
+        // A comment cannot be moved. If the finding's location changed (for
+        // example the line was corrected) replace it, but never when people
+        // replied or the thread was resolved by a person.
+        if (
+          target &&
+          !isAnchoredAt(prior, target) &&
+          prior.replies === 0 &&
+          !thread?.isResolved
+        ) {
+          const createdUrl = await this.createComment(input, finding, target, body);
+
+          if (createdUrl) {
+            await this.safely("delete outdated comment", () =>
+              this.github.rest.pulls.deleteReviewComment({
+                owner: input.owner,
+                repo: input.repository,
+                comment_id: prior.id,
+              }),
+            );
+
+            urls.set(finding.id, createdUrl);
+            continue;
+          }
+        }
+
+        urls.set(finding.id, activeUrl);
 
         if (prior.body !== body) {
           await this.safely("update comment", () =>
@@ -286,37 +348,19 @@ export class InlineReviewCommentPublisher {
         continue; // File not in the PR: still listed in the summary comment.
       }
 
-      await this.safely("create comment", async () => {
-        const created = await this.github.rest.pulls.createReviewComment({
-          owner: input.owner,
-          repo: input.repository,
-          pull_number: input.pullRequestNumber,
-          commit_id: input.headSha,
-          path: normalizePath(finding.file),
-          ...(target.kind === "file"
-            ? { subject_type: "file" }
-            : {
-                side: "RIGHT",
-                line: target.line,
-                ...(target.startLine
-                  ? { start_line: target.startLine, start_side: "RIGHT" }
-                  : {}),
-              }),
-          body,
-        });
+      const createdUrl = await this.createComment(input, finding, target, body);
 
-        urls.set(finding.id, created.data.html_url);
-      });
+      if (createdUrl) {
+        urls.set(finding.id, createdUrl);
+      }
     }
 
     return urls;
   }
 
   private async listExisting(input: InlineSyncInput) {
-    const found = new Map<
-      string,
-      { id: number; url: string; body: string }
-    >();
+    const found = new Map<string, ExistingComment>();
+    const replyCounts = new Map<number, number>();
 
     for (let page = 1; page <= 10; page++) {
       const response = await this.github.rest.pulls.listReviewComments({
@@ -328,13 +372,25 @@ export class InlineReviewCommentPublisher {
       });
 
       for (const comment of response.data) {
+        if (comment.in_reply_to_id !== undefined) {
+          replyCounts.set(
+            comment.in_reply_to_id,
+            (replyCounts.get(comment.in_reply_to_id) ?? 0) + 1,
+          );
+        }
+
         const id = extractFindingId(comment.body);
 
-        if (id && comment.user?.type === "Bot" && !found.has(id)) {
+        if (id && comment.user?.type === "Bot") {
+          // Listed oldest first: the newest comment for a finding wins.
           found.set(id, {
             id: comment.id,
             url: comment.html_url ?? "",
             body: comment.body ?? "",
+            line: comment.line,
+            startLine: comment.start_line,
+            subjectType: comment.subject_type,
+            replies: 0,
           });
         }
       }
@@ -344,7 +400,44 @@ export class InlineReviewCommentPublisher {
       }
     }
 
+    for (const comment of found.values()) {
+      comment.replies = replyCounts.get(comment.id) ?? 0;
+    }
+
     return found;
+  }
+
+  private async createComment(
+    input: InlineSyncInput,
+    finding: ReviewFinding,
+    target: CommentTarget,
+    body: string,
+  ): Promise<string | null> {
+    let url: string | null = null;
+
+    await this.safely("create comment", async () => {
+      const created = await this.github.rest.pulls.createReviewComment({
+        owner: input.owner,
+        repo: input.repository,
+        pull_number: input.pullRequestNumber,
+        commit_id: input.headSha,
+        path: normalizePath(finding.file),
+        ...(target.kind === "file"
+          ? { subject_type: "file" }
+          : {
+              side: "RIGHT",
+              line: target.line,
+              ...(target.startLine
+                ? { start_line: target.startLine, start_side: "RIGHT" }
+                : {}),
+            }),
+        body,
+      });
+
+      url = created.data.html_url;
+    });
+
+    return url;
   }
 
   private async listThreads(input: InlineSyncInput) {
