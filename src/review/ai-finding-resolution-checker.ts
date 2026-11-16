@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 import type { AiGateway } from "../gateway/ai-gateway.js";
-import type { ReviewFinding } from "../validation/review-result.js";
 import { FindingResolutionJsonSchema } from "../validation/finding-resolution-json-schema.js";
+import type { ReviewFinding } from "../validation/review-result.js";
 
 export interface GroundedResolution {
   findingId: string;
@@ -72,10 +72,7 @@ function normalizeWhitespace(value: string): string {
 }
 
 function normalizePath(path: string): string {
-  return path
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/^(?:\.\/)+/, "");
+  return path.trim().replace(/\\/g, "/").replace(/^(?:\.\/)+/, "");
 }
 
 export class AiFindingResolutionChecker implements FindingResolutionChecker {
@@ -84,16 +81,12 @@ export class AiFindingResolutionChecker implements FindingResolutionChecker {
     private readonly loadFiles: LoadFilesAtCommit,
   ) {}
 
-  async check(
-    input: FindingResolutionCheckInput,
-  ): Promise<GroundedResolution[]> {
+  async check(input: FindingResolutionCheckInput): Promise<GroundedResolution[]> {
     if (input.findings.length === 0) {
       return [];
     }
 
-    const paths = [
-      ...new Set(input.findings.map((f) => normalizePath(f.file))),
-    ];
+    const paths = [...new Set(input.findings.map((f) => normalizePath(f.file)))];
     const files = await this.loadFiles(input.repository, input.headSha, paths);
 
     // Only findings whose current source is available (and bounded) are checkable.

@@ -20,12 +20,13 @@ import {
 
 import { trackFindings, type FindingTrackerResult } from "./finding-tracker.js";
 
+import type { FindingResolutionChecker } from "./ai-finding-resolution-checker.js";
+
 import {
   verifyFindingResolution,
   type ResolutionEvidence,
   type FindingResolutionResult,
 } from "./finding-resolution-verifier.js";
-import { FindingResolutionChecker } from "./ai-finding-resolution-checker.js";
 
 export class ReviewServiceError extends Error {
   constructor(
@@ -252,8 +253,8 @@ export class ReviewService {
 
       return new Set(
         results
-          .map((result: any) => result.findingId)
-          .filter((id: any) => candidateIds.has(id)),
+          .map((result) => result.findingId)
+          .filter((id) => candidateIds.has(id)),
       );
     } catch (error) {
       console.error(
