@@ -68,6 +68,7 @@ export class ReviewStateCoordinator {
     beforePersist?: BeforePersistReview,
     deletedFilePaths: string[] = [],
     findMissingFindingFiles?: FindMissingFindingFiles,
+    sourceByPath?: ReadonlyMap<string, string>,
   ): Promise<CoordinatedReview> {
     const key: ReviewStateKey = {
       repository: request.repository,
@@ -134,6 +135,7 @@ export class ReviewStateCoordinator {
         previousFindings,
         resolutionEvidence,
         pathsToResolve,
+        sourceByPath,
       );
     } catch (error) {
       let diagnosticMessage: string;

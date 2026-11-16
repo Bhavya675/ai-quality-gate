@@ -16,11 +16,8 @@ import { ReviewService } from "./review/review-service.js";
 import { AiGateway } from "./gateway/ai-gateway.js";
 import { GeminiProvider } from "./gateway/providers/gemini-provider.js";
 import { AiFindingResolutionChecker } from "./review/ai-finding-resolution-checker.js";
-import {
-  RESULT_MARKER,
-  renderResultComment,
-} from "./github/result-comment-renderer.js";
 import { InlineReviewCommentPublisher } from "./github/inline-review-comments.js";
+import { RESULT_MARKER, renderResultComment } from "./github/result-comment-renderer.js";
 
 async function publishResultComment(
   octokit: ReturnType<typeof createGitHubClient>,
@@ -68,9 +65,7 @@ async function writeStepSummary(markdown: string): Promise<void> {
 async function main(): Promise<void> {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) {
-    throw new Error(
-      "GITHUB_EVENT_PATH is not set. Run this command from a GitHub Actions pull_request event.",
-    );
+    throw new Error("GITHUB_EVENT_PATH is not set. Run this command from a GitHub Actions pull_request event.");
   }
 
   const eventPayload = JSON.parse(await readFile(eventPath, "utf8")) as unknown;
@@ -79,21 +74,16 @@ async function main(): Promise<void> {
     throw new Error("GITHUB_REPOSITORY is not set.");
   }
 
-  const [ownerFromEnvironment, repositoryFromEnvironmentName] =
-    repositoryFromEnvironment.split("/");
+  const [ownerFromEnvironment, repositoryFromEnvironmentName] = repositoryFromEnvironment.split("/");
   if (!ownerFromEnvironment || !repositoryFromEnvironmentName) {
     throw new Error("GITHUB_REPOSITORY must use owner/repository format.");
   }
 
   const guidelinesPath = resolve(process.cwd(), "docs/review-guidelines.md");
   const guidelines = await readFile(guidelinesPath, "utf8");
-  const actualGuidelinesSha = createHash("sha256")
-    .update(guidelines, "utf8")
-    .digest("hex");
+  const actualGuidelinesSha = createHash("sha256").update(guidelines, "utf8").digest("hex");
   if (actualGuidelinesSha !== env.REVIEW_GUIDELINES_SHA) {
-    throw new Error(
-      "REVIEW_GUIDELINES_SHA does not match docs/review-guidelines.md. Update the configured hash.",
-    );
+    throw new Error("REVIEW_GUIDELINES_SHA does not match docs/review-guidelines.md. Update the configured hash.");
   }
 
   const octokit = createGitHubClient(env.GITHUB_TOKEN);
@@ -136,14 +126,10 @@ async function main(): Promise<void> {
     octokit,
     env.REVIEW_STATE_SIGNING_SECRET,
   );
-  const stateCoordinator = new ReviewStateCoordinator(
-    reviewService,
-    stateStore,
-    {
-      policyVersion: env.REVIEW_POLICY_VERSION,
-      guidelinesSha: actualGuidelinesSha,
-    },
-  );
+  const stateCoordinator = new ReviewStateCoordinator(reviewService, stateStore, {
+    policyVersion: env.REVIEW_POLICY_VERSION,
+    guidelinesSha: actualGuidelinesSha,
+  });
 
   const pipeline = new PullRequestReviewPipeline({
     pullRequestService,
@@ -153,11 +139,7 @@ async function main(): Promise<void> {
     reviewStateCoordinator: stateCoordinator,
     reviewGuard: new PullRequestReviewGuard(),
     getLatestHeadSha: async (owner, repository, pullRequestNumber) =>
-      pullRequestService.getLatestHeadSha({
-        owner,
-        repository,
-        pullRequestNumber,
-      }),
+      pullRequestService.getLatestHeadSha({ owner, repository, pullRequestNumber }),
     guidelines,
     policyVersion: env.REVIEW_POLICY_VERSION,
   });
@@ -172,7 +154,29 @@ async function main(): Promise<void> {
   const { owner, repository, pullRequestNumber, headSha, files } =
     result.pullRequest;
 
-  // Inline comments are best-effort: they must never change the gate result.
+  const serverUrl = process.env.GITHUB_SERVER_URL ?? "https://github.com";
+  const runId = process.env.GITHUB_RUN_ID;
+  const renderComment = (inlineCommentUrls?: ReadonlyMap<string, string>) =>
+    renderResultComment({
+      verdict: completed.verdict.verdict,
+      summary: completed.verdict.summary,
+      reviewComplete: completed.review.review_complete,
+      headSha,
+      findings: completed.review.findings,
+      sensitiveCategories: completed.review.sensitive_categories,
+      serverUrl,
+      owner,
+      repository,
+      workflowRunUrl: runId
+        ? `${serverUrl}/${owner}/${repository}/actions/runs/${runId}`
+        : undefined,
+      inlineCommentUrls,
+    });
+
+  // 1) Summary first, so it sits above the inline review threads.
+  await publishResultComment(octokit, owner, repository, pullRequestNumber, renderComment());
+
+  // 2) Inline comments are best-effort: they must never change the gate result.
   let inlineCommentUrls = new Map<string, string>();
   try {
     inlineCommentUrls = await new InlineReviewCommentPublisher(
@@ -192,31 +196,11 @@ async function main(): Promise<void> {
     );
   }
 
-  const serverUrl = process.env.GITHUB_SERVER_URL ?? "https://github.com";
-  const runId = process.env.GITHUB_RUN_ID;
-  const comment = renderResultComment({
-    verdict: completed.verdict.verdict,
-    summary: completed.verdict.summary,
-    reviewComplete: completed.review.review_complete,
-    headSha,
-    findings: completed.review.findings,
-    sensitiveCategories: completed.review.sensitive_categories,
-    serverUrl,
-    owner,
-    repository,
-    workflowRunUrl: runId
-      ? `${serverUrl}/${owner}/${repository}/actions/runs/${runId}`
-      : undefined,
-    inlineCommentUrls,
-  });
-
-  await publishResultComment(
-    octokit,
-    result.pullRequest.owner,
-    result.pullRequest.repository,
-    result.pullRequest.pullRequestNumber,
-    comment,
-  );
+  // 3) Re-publish the summary so each file link opens its inline comment.
+  const comment = renderComment(inlineCommentUrls);
+  if (inlineCommentUrls.size > 0) {
+    await publishResultComment(octokit, owner, repository, pullRequestNumber, comment);
+  }
   await writeStepSummary(comment);
 
   console.log(`AI Quality Gate verdict: ${completed.verdict.verdict}`);
@@ -232,10 +216,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const message =
-    error instanceof Error
-      ? error.message
-      : "Unexpected review execution error.";
+  const message = error instanceof Error ? error.message : "Unexpected review execution error.";
   console.error(`AI Quality Gate failed: ${message}`);
   process.exitCode = 1;
 });
