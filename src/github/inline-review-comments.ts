@@ -25,6 +25,8 @@ export interface ReviewCommentApi {
           start_line?: number | null;
           subject_type?: string | null;
           in_reply_to_id?: number;
+          original_line?: number | null;
+          original_commit_id?: string | null;
         }>;
       }>;
       createReviewComment(p: Record<string, unknown>): Promise<{
@@ -33,6 +35,11 @@ export interface ReviewCommentApi {
       updateReviewComment(p: Record<string, unknown>): Promise<unknown>;
       deleteReviewComment(p: Record<string, unknown>): Promise<unknown>;
       createReplyForReviewComment(p: Record<string, unknown>): Promise<unknown>;
+    };
+    repos: {
+      compareCommitsWithBasehead(p: Record<string, unknown>): Promise<{
+        data: { files?: Array<{ filename: string; patch?: string }> };
+      }>;
     };
   };
   graphql<T = unknown>(query: string, variables?: Record<string, unknown>): Promise<T>;
@@ -177,6 +184,121 @@ function extractFindingId(body: string | null | undefined): string | null {
   return end > 0 && ID_PATTERN.test(id) ? id : null;
 }
 
+/**
+ * `/files#r<id>` expands the diff and the thread even when the thread is
+ * collapsed (resolved, outdated or viewed). `#discussion_r<id>` on the
+ * conversation tab does not always expand it.
+ */
+export function toFilesTabUrl(htmlUrl: string): string {
+  return htmlUrl.replace(/\/pull\/(\d+)#discussion_r(\d+)$/, "/pull/$1/files#r$2");
+}
+
+interface Hunk {
+  header: string;
+  oldStart: number;
+  oldLength: number;
+  lines: string[];
+}
+
+function splitHunks(patch: string): Hunk[] {
+  const hunks: Hunk[] = [];
+
+  for (const row of patch.split("\n")) {
+    const header = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/.exec(row);
+
+    if (header) {
+      hunks.push({
+        header: row,
+        oldStart: Number(header[1]),
+        oldLength: header[2] === undefined ? 1 : Number(header[2]),
+        lines: [],
+      });
+    } else if (hunks.length > 0) {
+      hunks[hunks.length - 1].lines.push(row);
+    }
+  }
+
+  return hunks;
+}
+
+const FIX_HUNK_WINDOW = 10;
+const FIX_NEAREST_HUNK_DISTANCE = 50;
+const FIX_DIFF_MAX_LINES = 60;
+
+/** The part of a file's compare-patch that changed around the old line. */
+export function selectFixDiff(
+  patch: string,
+  oldLine: number | null | undefined,
+  maxLines = FIX_DIFF_MAX_LINES,
+): string | null {
+  const hunks = splitHunks(patch);
+
+  if (hunks.length === 0) {
+    return null;
+  }
+
+  const distance = (hunk: Hunk, line: number) => {
+    const end = hunk.oldStart + Math.max(hunk.oldLength, 1) - 1;
+    return line < hunk.oldStart ? hunk.oldStart - line : line > end ? line - end : 0;
+  };
+
+  let chosen: Hunk[] = [];
+
+  if (oldLine != null) {
+    chosen = hunks.filter((hunk) => distance(hunk, oldLine) <= FIX_HUNK_WINDOW);
+
+    if (chosen.length === 0) {
+      const nearest = hunks.reduce((a, b) =>
+        distance(b, oldLine) < distance(a, oldLine) ? b : a,
+      );
+
+      if (distance(nearest, oldLine) <= FIX_NEAREST_HUNK_DISTANCE) {
+        chosen = [nearest];
+      }
+    }
+  }
+
+  if (chosen.length === 0) {
+    chosen = [hunks[0]];
+  }
+
+  const rows = chosen.flatMap((hunk) => [hunk.header, ...hunk.lines]);
+
+  while (rows.length > 0 && rows[rows.length - 1].trim() === "") {
+    rows.pop();
+  }
+
+  return rows.length > maxLines
+    ? [...rows.slice(0, maxLines), "… (diff truncated)"].join("\n")
+    : rows.join("\n");
+}
+
+export function renderResolvedReply(headSha: string, diff: string | null): string {
+  const lines = [`✅ **Resolved** in \`${headSha.slice(0, 7)}\`.`];
+
+  if (diff) {
+    const longestRun = Math.max(
+      0,
+      ...[...diff.matchAll(/`+/g)].map((match) => match[0].length),
+    );
+    const fence = "`".repeat(Math.max(3, longestRun + 1));
+
+    lines.push(
+      "",
+      "<details open>",
+      "<summary>Changes that fixed it</summary>",
+      "",
+      `${fence}diff`,
+      diff,
+      fence,
+      "",
+      "</details>",
+    );
+  }
+
+  return lines.join("\n");
+}
+
 interface ExistingComment {
   id: number;
   url: string;
@@ -185,6 +307,8 @@ interface ExistingComment {
   line?: number | null;
   startLine?: number | null;
   subjectType?: string | null;
+  originalLine?: number | null;
+  originalCommitId?: string | null;
   replies: number;
 }
 
@@ -264,12 +388,14 @@ export class InlineReviewCommentPublisher {
       if (finding.status === "resolved") {
         if (prior && thread && !thread.isResolved) {
           await this.safely("resolve thread", async () => {
+            const diff = await this.buildFixDiff(input, prior, finding);
+
             await this.github.rest.pulls.createReplyForReviewComment({
               owner: input.owner,
               repo: input.repository,
               pull_number: input.pullRequestNumber,
               comment_id: prior.id,
-              body: `✅ Fixed as of \`${input.headSha.slice(0, 7)}\`.`,
+              body: renderResolvedReply(input.headSha, diff),
             });
             await this.github.graphql(
               "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { id } } }",
@@ -385,11 +511,13 @@ export class InlineReviewCommentPublisher {
           // Listed oldest first: the newest comment for a finding wins.
           found.set(id, {
             id: comment.id,
-            url: comment.html_url ?? "",
+            url: toFilesTabUrl(comment.html_url ?? ""),
             body: comment.body ?? "",
             line: comment.line,
             startLine: comment.start_line,
             subjectType: comment.subject_type,
+            originalLine: comment.original_line,
+            originalCommitId: comment.original_commit_id,
             replies: 0,
           });
         }
@@ -405,6 +533,53 @@ export class InlineReviewCommentPublisher {
     }
 
     return found;
+  }
+
+  /** Diff of what changed around the finding since the comment was made. */
+  private async buildFixDiff(
+    input: InlineSyncInput,
+    prior: ExistingComment,
+    finding: ReviewFinding,
+  ): Promise<string | null> {
+    const base = prior.originalCommitId;
+
+    if (!base || base === input.headSha) {
+      return null;
+    }
+
+    try {
+      const path = normalizePath(finding.file);
+
+      for (let page = 1; page <= 5; page++) {
+        const response = await this.github.rest.repos.compareCommitsWithBasehead({
+          owner: input.owner,
+          repo: input.repository,
+          basehead: `${base}...${input.headSha}`,
+          per_page: 100,
+          page,
+        });
+
+        const files = response.data.files ?? [];
+        const match = files.find((file) => normalizePath(file.filename) === path);
+
+        if (match) {
+          return match.patch
+            ? selectFixDiff(match.patch, prior.originalLine ?? finding.line)
+            : null;
+        }
+
+        if (files.length < 100) {
+          break;
+        }
+      }
+    } catch (error) {
+      console.warn(
+        "[InlineReviewComments] fix diff unavailable:",
+        error instanceof Error ? error.message : "unknown error",
+      );
+    }
+
+    return null;
   }
 
   private async createComment(
@@ -434,7 +609,7 @@ export class InlineReviewCommentPublisher {
         body,
       });
 
-      url = created.data.html_url;
+      url = toFilesTabUrl(created.data.html_url);
     });
 
     return url;
