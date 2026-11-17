@@ -340,6 +340,7 @@ query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
         nodes {
           id
           isResolved
+          isOutdated
           comments(first: 1) { nodes { databaseId } }
         }
       }
@@ -355,6 +356,7 @@ interface ThreadsResponse {
         nodes: Array<{
           id: string;
           isResolved: boolean;
+          isOutdated: boolean;
           comments: { nodes: Array<{ databaseId: number | null }> };
         }>;
       };
@@ -418,34 +420,51 @@ export class InlineReviewCommentPublisher {
       const body = renderInlineBody(finding, target?.kind === "file");
 
       if (prior) {
-        const activeUrl = prior.url;
+        // The finding is still open, so its thread must be open. GitHub
+        // collapses a thread only when it is resolved or outdated.
+        let reopened = thread?.isResolved === true;
 
-        // A comment cannot be moved. If the finding's location changed (for
-        // example the line was corrected) replace it, but never when people
-        // replied or the thread was resolved by a person.
-        if (
-          target &&
-          !isAnchoredAt(prior, target) &&
-          prior.replies === 0 &&
-          !thread?.isResolved
-        ) {
+        if (thread && reopened) {
+          reopened = !(await this.safely("reopen thread", () =>
+            this.github.graphql(
+              "mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { id } } }",
+              { id: thread.id },
+            ),
+          ));
+        }
+
+        const outdated = thread?.isOutdated === true || prior.line === null;
+        const misplaced = target ? !isAnchoredAt(prior, target) || outdated : false;
+
+        // A comment cannot be moved, so a misplaced or outdated one is
+        // replaced on the current diff. An outdated thread people replied to
+        // is kept as history, and a fresh open comment is added next to it.
+        if (target && misplaced && (prior.replies === 0 || outdated)) {
           const createdUrl = await this.createComment(input, finding, target, body);
 
           if (createdUrl) {
-            await this.safely("delete outdated comment", () =>
-              this.github.rest.pulls.deleteReviewComment({
-                owner: input.owner,
-                repo: input.repository,
-                comment_id: prior.id,
-              }),
-            );
+            if (prior.replies === 0) {
+              await this.safely("delete outdated comment", () =>
+                this.github.rest.pulls.deleteReviewComment({
+                  owner: input.owner,
+                  repo: input.repository,
+                  comment_id: prior.id,
+                }),
+              );
+            }
 
             urls.set(finding.id, createdUrl);
             continue;
           }
         }
 
-        urls.set(finding.id, activeUrl);
+        if (outdated || reopened) {
+          console.warn(
+            `[InlineReviewComments] Thread for finding ${finding.id} may still be collapsed in GitHub (outdated or still resolved).`,
+          );
+        }
+
+        urls.set(finding.id, prior.url);
 
         if (prior.body !== body) {
           await this.safely("update comment", () =>
@@ -455,15 +474,6 @@ export class InlineReviewCommentPublisher {
               comment_id: prior.id,
               body,
             }),
-          );
-        }
-
-        if (thread?.isResolved) {
-          await this.safely("reopen thread", () =>
-            this.github.graphql(
-              "mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { id } } }",
-              { id: thread.id },
-            ),
           );
         }
 
@@ -511,7 +521,7 @@ export class InlineReviewCommentPublisher {
           // Listed oldest first: the newest comment for a finding wins.
           found.set(id, {
             id: comment.id,
-            url: toFilesTabUrl(comment.html_url ?? ""),
+            url: comment.html_url ?? "",
             body: comment.body ?? "",
             line: comment.line,
             startLine: comment.start_line,
@@ -609,14 +619,17 @@ export class InlineReviewCommentPublisher {
         body,
       });
 
-      url = toFilesTabUrl(created.data.html_url);
+      url = created.data.html_url;
     });
 
     return url;
   }
 
   private async listThreads(input: InlineSyncInput) {
-    const threads = new Map<number, { id: string; isResolved: boolean }>();
+    const threads = new Map<
+      number,
+      { id: string; isResolved: boolean; isOutdated: boolean }
+    >();
     let cursor: string | null = null;
 
     try {
@@ -637,7 +650,11 @@ export class InlineReviewCommentPublisher {
           const first = node.comments.nodes[0]?.databaseId;
 
           if (first != null) {
-            threads.set(first, { id: node.id, isResolved: node.isResolved });
+            threads.set(first, {
+              id: node.id,
+              isResolved: node.isResolved,
+              isOutdated: node.isOutdated === true,
+            });
           }
         }
 
@@ -657,14 +674,17 @@ export class InlineReviewCommentPublisher {
     return threads;
   }
 
-  private async safely(action: string, fn: () => Promise<unknown>): Promise<void> {
+  /** Runs an action; returns true when it succeeded. */
+  private async safely(action: string, fn: () => Promise<unknown>): Promise<boolean> {
     try {
       await fn();
+      return true;
     } catch (error) {
       console.warn(
         `[InlineReviewComments] ${action} failed:`,
         error instanceof Error ? error.message : "unknown error",
       );
+      return false;
     }
   }
 }

@@ -75,6 +75,14 @@ REVIEW RULES:
 - Do not assume code not included in the context exists or behaves in a
   particular way.
 
+QUALITY RULES:
+- Report each root cause once, at the single most relevant line. Do not
+  restate the same defect with different wording, scope or severity.
+- Before reporting a defect, re-read the quoted code and confirm every
+  identifier or keyword your title names really appears there as written.
+  For example, "thisGetToken()" is a plain function call and does not use
+  the "this" keyword. If you cannot confirm it, do not report it.
+
 LOCATION RULES:
 - Each file "source" is prefixed with its real line numbers as "N| code".
   Use those numbers for "line" and "end_line"; never count lines yourself.

@@ -32,10 +32,7 @@ function previousFinding(): ReviewFinding {
   };
 }
 
-function checker(
-  responseJson: unknown,
-  files = new Map([[FILE, FIXED_SOURCE]]),
-) {
+function checker(responseJson: unknown, files = new Map([[FILE, FIXED_SOURCE]])) {
   const gateway = {
     review: vi.fn().mockResolvedValue({
       content: JSON.stringify(responseJson),
@@ -66,8 +63,7 @@ describe("AiFindingResolutionChecker", () => {
           finding_id: "finding-001",
           decision: "CONFIRMED_FIXED",
           reasoning: "Guard added.",
-          fixed_code_quote:
-            'if (!user.isAdmin) {\n    throw new Error("forbidden");',
+          fixed_code_quote: 'if (!user.isAdmin) {\n    throw new Error("forbidden");',
         },
       ],
     });
@@ -114,11 +110,7 @@ describe("AiFindingResolutionChecker", () => {
       {
         review: vi
           .fn()
-          .mockResolvedValue({
-            content: "not json",
-            provider: "t",
-            model: "t",
-          }),
+          .mockResolvedValue({ content: "not json", provider: "t", model: "t" }),
       },
       async () => new Map([[FILE, FIXED_SOURCE]]),
     );
@@ -159,11 +151,7 @@ describe("ReviewService with resolution checker", () => {
     maxTokens: 8192,
   };
 
-  function service(
-    reviewComplete: boolean,
-    resolved: string[],
-    throws = false,
-  ) {
+  function service(reviewComplete: boolean, resolved: string[], throws = false) {
     const gateway = {
       review: vi.fn().mockResolvedValue({
         content: JSON.stringify({

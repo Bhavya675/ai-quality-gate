@@ -183,6 +183,36 @@ function areLocationsNearby(
   return distance <= 3;
 }
 
+function normalizeEvidence(evidence: string): string {
+  return evidence
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*\d+\|\s?/, ""))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function haveSameEvidence(first: ReviewFinding, second: ReviewFinding): boolean {
+  const a = normalizeEvidence(first.evidence);
+  const b = normalizeEvidence(second.evidence);
+
+  if (a.length < 12 || b.length < 12) {
+    return false;
+  }
+
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+/** Code the title names in quotes, e.g. the 'this' in "Invalid use of 'this'". */
+function extractQuotedTitleTokens(finding: ReviewFinding): Set<string> {
+  return new Set(
+    [...finding.title.matchAll(/['"`‘’“”]([^'"`‘’“”\s]{2,40})['"`‘’“”]/g)].map(
+      (match) => match[1].toLowerCase(),
+    ),
+  );
+}
+
 export function generateFindingId(
   finding: Pick<ReviewFinding, "category" | "file" | "title">,
 ): string {
@@ -224,6 +254,18 @@ export function areEquivalentFindings(
 
   if (!areLocationsNearby(first, second)) {
     return false;
+  }
+
+  // Same code at the same place: one root cause described twice.
+  if (haveSameEvidence(first, second)) {
+    return true;
+  }
+
+  // Titles that name the same quoted code entity at the same place.
+  const secondQuoted = extractQuotedTitleTokens(second);
+
+  if ([...extractQuotedTitleTokens(first)].some((t) => secondQuoted.has(t))) {
+    return true;
   }
 
   const firstSymbols = extractCodeSymbols(first);

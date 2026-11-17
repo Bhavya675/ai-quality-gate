@@ -27,7 +27,7 @@ function createFinding(
     description: "Authorization is not checked.",
     impact: "Unauthorized access may occur.",
     suggested_fix: "Add authorization validation.",
-    evidence: "The operation executes without permission checks.",
+    evidence: `The operation executes without permission checks (${title}).`,
     occurrence: "new",
     status,
   };
@@ -278,5 +278,52 @@ describe("Finding Identity", () => {
 
     expect(result.findings).toHaveLength(2);
     expect(result.duplicatesRemoved).toBe(0);
+  });
+
+  describe("paraphrased duplicates at the same code location", () => {
+    const base = (title: string, over: Partial<ReviewFinding> = {}) => ({
+      ...createFinding("x", title, "open", 31, "BLOCKER", "correctness", "src/auth.interceptor.ts"),
+      ...over,
+    });
+
+    it("merges findings that name the same quoted code entity", () => {
+      const result = deduplicateFindings([
+        base("Invalid use of 'this' in module-level scope", { evidence: "a" }),
+        base("Invalid use of 'this' in interceptor function", { evidence: "b" }),
+        base("Invalid 'this' context in functional interceptor", { evidence: "c" }),
+      ]);
+
+      expect(result.findings).toHaveLength(1);
+      expect(result.duplicatesRemoved).toBe(2);
+    });
+
+    it("merges findings that cite the same code evidence", () => {
+      const evidence = "return next(req.clone({ setHeaders: { Authorization: token } }));";
+      const result = deduplicateFindings([
+        base("Token exposed in headers", { evidence }),
+        base("Credentials sent to every origin", { evidence: `7| ${evidence}` }),
+      ]);
+
+      expect(result.findings).toHaveLength(1);
+    });
+
+    it("keeps different quoted entities and different evidence apart", () => {
+      const result = deduplicateFindings([
+        base("Unsafe use of 'localStorage'", { evidence: "const token = localStorage.getItem('t');" }),
+        base("Invalid use of 'this'", { evidence: "this.x = 1;" }),
+      ]);
+
+      expect(result.findings).toHaveLength(2);
+    });
+
+    it("does not merge the same evidence in distant locations", () => {
+      const evidence = "return fetch(this.ordersApiUrl, options);";
+      const result = deduplicateFindings([
+        base("Raw fetch", { evidence, line: 10 }),
+        base("Raw fetch usage", { evidence, line: 80 }),
+      ]);
+
+      expect(result.findings).toHaveLength(2);
+    });
   });
 });

@@ -16,7 +16,7 @@ function createFinding(
     description: "Example description.",
     impact: "Example impact.",
     suggested_fix: "Example fix.",
-    evidence: "Example evidence.",
+    evidence: `Example evidence for ${id}.`,
     occurrence: "new",
     status,
   };

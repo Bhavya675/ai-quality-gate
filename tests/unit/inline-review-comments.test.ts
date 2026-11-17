@@ -97,25 +97,17 @@ describe("diff line helpers", () => {
   it("targets exact, range, nearest and none", () => {
     const set = getCommentableLines(PATCH);
 
-    expect(resolveCommentTarget({ line: 11 }, set)).toEqual({
-      kind: "line",
-      line: 11,
-    });
+    expect(resolveCommentTarget({ line: 11 }, set)).toEqual({ kind: "line", line: 11 });
     expect(resolveCommentTarget({ line: 10, end_line: 12 }, set)).toEqual({
       kind: "line",
       startLine: 10,
       line: 12,
     });
     // within 3 lines of the diff: nearest diff line
-    expect(resolveCommentTarget({ line: 15 }, set)).toEqual({
-      kind: "line",
-      line: 13,
-    });
+    expect(resolveCommentTarget({ line: 15 }, set)).toEqual({ kind: "line", line: 13 });
     // far from the changed lines: file-level, never a misleading line
     expect(resolveCommentTarget({ line: 48 }, set)).toEqual({ kind: "file" });
-    expect(resolveCommentTarget({ line: 5 }, new Set())).toEqual({
-      kind: "file",
-    });
+    expect(resolveCommentTarget({ line: 5 }, new Set())).toEqual({ kind: "file" });
   });
 });
 
@@ -135,7 +127,7 @@ describe("InlineReviewCommentPublisher", () => {
     expect(urls.get("abc123")).toBe("https://x/r7");
   });
 
-  it("links the summary to the Files changed anchor, which expands collapsed threads", async () => {
+  it("returns the Conversation-tab URL of the comment", async () => {
     const github = api();
     github.rest.pulls.createReviewComment.mockResolvedValue({
       data: { id: 9, html_url: "https://github.com/o/r/pull/2#discussion_r99" },
@@ -145,7 +137,9 @@ describe("InlineReviewCommentPublisher", () => {
       input([finding()]),
     );
 
-    expect(urls.get("abc123")).toBe("https://github.com/o/r/pull/2/files#r99");
+    expect(urls.get("abc123")).toBe(
+      "https://github.com/o/r/pull/2#discussion_r99",
+    );
   });
 
   it("does not duplicate a comment that already exists", async () => {
@@ -159,9 +153,7 @@ describe("InlineReviewCommentPublisher", () => {
       },
     ]);
 
-    const urls = await new InlineReviewCommentPublisher(github).sync(
-      input([f]),
-    );
+    const urls = await new InlineReviewCommentPublisher(github).sync(input([f]));
 
     expect(github.rest.pulls.createReviewComment).not.toHaveBeenCalled();
     expect(github.rest.pulls.updateReviewComment).not.toHaveBeenCalled();
@@ -186,28 +178,13 @@ describe("InlineReviewCommentPublisher", () => {
   it("resolves the thread when the finding is resolved", async () => {
     const f = finding({ status: "resolved" });
     const github = api(
-      [
-        {
-          id: 5,
-          body: renderInlineBody(f),
-          html_url: "u",
-          user: { type: "Bot" },
-        },
-      ],
-      [
-        {
-          id: "T1",
-          isResolved: false,
-          comments: { nodes: [{ databaseId: 5 }] },
-        },
-      ],
+      [{ id: 5, body: renderInlineBody(f), html_url: "u", user: { type: "Bot" } }],
+      [{ id: "T1", isResolved: false, comments: { nodes: [{ databaseId: 5 }] } }],
     );
 
     await new InlineReviewCommentPublisher(github).sync(input([f]));
 
-    expect(github.rest.pulls.createReplyForReviewComment).toHaveBeenCalledTimes(
-      1,
-    );
+    expect(github.rest.pulls.createReplyForReviewComment).toHaveBeenCalledTimes(1);
     const mutation = github.graphql.mock.calls.find((c) =>
       String(c[0]).includes("resolveReviewThread"),
     );
@@ -217,21 +194,8 @@ describe("InlineReviewCommentPublisher", () => {
   it("reopens a resolved thread when the finding returns", async () => {
     const f = finding();
     const github = api(
-      [
-        {
-          id: 5,
-          body: renderInlineBody(f),
-          html_url: "u",
-          user: { type: "Bot" },
-        },
-      ],
-      [
-        {
-          id: "T1",
-          isResolved: true,
-          comments: { nodes: [{ databaseId: 5 }] },
-        },
-      ],
+      [{ id: 5, body: renderInlineBody(f), html_url: "u", user: { type: "Bot" } }],
+      [{ id: "T1", isResolved: true, comments: { nodes: [{ databaseId: 5 }] } }],
     );
 
     await new InlineReviewCommentPublisher(github).sync(input([f]));
@@ -294,12 +258,7 @@ describe("InlineReviewCommentPublisher", () => {
     it("keeps the comment when people replied to it", async () => {
       const github = api([
         botComment(),
-        {
-          id: 6,
-          body: "I disagree",
-          user: { type: "User" },
-          in_reply_to_id: 5,
-        },
+        { id: 6, body: "I disagree", user: { type: "User" }, in_reply_to_id: 5 },
       ]);
 
       const urls = await new InlineReviewCommentPublisher(github).sync(
@@ -335,9 +294,7 @@ describe("InlineReviewCommentPublisher", () => {
     expect(call.subject_type).toBe("file");
     expect(call.line).toBeUndefined();
     expect(call.body).toContain("src/a.ts:48");
-    expect(
-      call.body.startsWith("<!-- AI_QUALITY_GATE_FINDING:abc123 -->"),
-    ).toBe(true);
+    expect(call.body.startsWith("<!-- AI_QUALITY_GATE_FINDING:abc123 -->")).toBe(true);
   });
 
   it("skips files that are not in the PR and survives API errors", async () => {
@@ -408,13 +365,7 @@ describe("fix diff on resolve", () => {
           original_line: 6,
         },
       ],
-      [
-        {
-          id: "T1",
-          isResolved: false,
-          comments: { nodes: [{ databaseId: 5 }] },
-        },
-      ],
+      [{ id: "T1", isResolved: false, comments: { nodes: [{ databaseId: 5 }] } }],
     );
     github.rest.repos.compareCommitsWithBasehead = compare as never;
     return { f, github };
@@ -429,14 +380,11 @@ describe("fix diff on resolve", () => {
 
     await new InlineReviewCommentPublisher(github).sync(input([f]));
 
-    const reply =
-      github.rest.pulls.createReplyForReviewComment.mock.calls[0][0];
+    const reply = github.rest.pulls.createReplyForReviewComment.mock.calls[0][0];
     expect(reply.body).toContain("Resolved");
     expect(reply.body).toContain("```diff");
     expect(reply.body).toContain("+  return http.get(url);");
-    expect(github.rest.pulls.createReplyForReviewComment).toHaveBeenCalledTimes(
-      1,
-    );
+    expect(github.rest.pulls.createReplyForReviewComment).toHaveBeenCalledTimes(1);
   });
 
   it("still resolves with a plain reply when the compare call fails", async () => {
@@ -446,13 +394,85 @@ describe("fix diff on resolve", () => {
 
     await new InlineReviewCommentPublisher(github).sync(input([f]));
 
-    const reply =
-      github.rest.pulls.createReplyForReviewComment.mock.calls[0][0];
+    const reply = github.rest.pulls.createReplyForReviewComment.mock.calls[0][0];
     expect(reply.body).not.toContain("```diff");
     expect(
-      github.graphql.mock.calls.some((c) =>
-        String(c[0]).includes("resolveReviewThread"),
-      ),
+      github.graphql.mock.calls.some((c) => String(c[0]).includes("resolveReviewThread")),
     ).toBe(true);
+  });
+});
+
+describe("open findings keep open, current threads", () => {
+  const bot = (over: Record<string, unknown> = {}) => ({
+    id: 5,
+    body: renderInlineBody(finding()),
+    html_url: "https://x/r5",
+    user: { type: "Bot" },
+    line: 11,
+    start_line: null,
+    subject_type: "line",
+    ...over,
+  });
+
+  const thread = (over: Record<string, unknown> = {}) => ({
+    id: "T1",
+    isResolved: false,
+    isOutdated: false,
+    comments: { nodes: [{ databaseId: 5 }] },
+    ...over,
+  });
+
+  it("leaves an unresolved, current thread untouched", async () => {
+    const github = api([bot()], [thread()]);
+
+    const urls = await new InlineReviewCommentPublisher(github).sync(input([finding()]));
+
+    expect(github.rest.pulls.createReviewComment).not.toHaveBeenCalled();
+    expect(github.rest.pulls.deleteReviewComment).not.toHaveBeenCalled();
+    expect(urls.get("abc123")).toBe("https://x/r5");
+  });
+
+  it("replaces a thread GitHub reports as outdated", async () => {
+    const github = api([bot()], [thread({ isOutdated: true })]);
+
+    const urls = await new InlineReviewCommentPublisher(github).sync(input([finding()]));
+
+    expect(github.rest.pulls.createReviewComment).toHaveBeenCalledTimes(1);
+    expect(github.rest.pulls.deleteReviewComment).toHaveBeenCalledTimes(1);
+    expect(urls.get("abc123")).toBe("https://x/r7");
+  });
+
+  it("keeps an outdated thread that has replies and adds a fresh open comment", async () => {
+    const github = api(
+      [bot(), { id: 6, body: "reply", user: { type: "User" }, in_reply_to_id: 5 }],
+      [thread({ isOutdated: true })],
+    );
+
+    const urls = await new InlineReviewCommentPublisher(github).sync(input([finding()]));
+
+    expect(github.rest.pulls.createReviewComment).toHaveBeenCalledTimes(1);
+    expect(github.rest.pulls.deleteReviewComment).not.toHaveBeenCalled();
+    expect(urls.get("abc123")).toBe("https://x/r7");
+  });
+
+  it("reopens a resolved thread and replaces it when it is also outdated", async () => {
+    const github = api([bot()], [thread({ isResolved: true, isOutdated: true })]);
+
+    await new InlineReviewCommentPublisher(github).sync(input([finding()]));
+
+    expect(
+      github.graphql.mock.calls.some((c) => String(c[0]).includes("unresolveReviewThread")),
+    ).toBe(true);
+    expect(github.rest.pulls.createReviewComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the old comment when replacing an outdated thread fails", async () => {
+    const github = api([bot()], [thread({ isOutdated: true })]);
+    github.rest.pulls.createReviewComment.mockRejectedValue(new Error("422"));
+
+    const urls = await new InlineReviewCommentPublisher(github).sync(input([finding()]));
+
+    expect(github.rest.pulls.deleteReviewComment).not.toHaveBeenCalled();
+    expect(urls.get("abc123")).toBe("https://x/r5");
   });
 });
