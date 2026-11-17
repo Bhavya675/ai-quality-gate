@@ -112,11 +112,13 @@ describe("AiFindingResolutionChecker", () => {
   it("fails closed on invalid JSON or unknown ids", async () => {
     const bad = new AiFindingResolutionChecker(
       {
-        review: vi.fn().mockResolvedValue({
-          content: "not json",
-          provider: "t",
-          model: "t",
-        }),
+        review: vi
+          .fn()
+          .mockResolvedValue({
+            content: "not json",
+            provider: "t",
+            model: "t",
+          }),
       },
       async () => new Map([[FILE, FIXED_SOURCE]]),
     );

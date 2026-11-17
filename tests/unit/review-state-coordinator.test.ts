@@ -209,6 +209,7 @@ describe("ReviewStateCoordinator", () => {
       [],
       [],
       ["src/old-service.ts"],
+      undefined,
     );
   });
 
@@ -352,6 +353,7 @@ describe("ReviewStateCoordinator", () => {
       previousState.findings,
       [],
       [],
+      undefined,
     );
   });
 
@@ -362,7 +364,7 @@ describe("ReviewStateCoordinator", () => {
 
     const result = await coordinator.review(request);
 
-    expect(review).toHaveBeenCalledWith(request, [], [], []);
+    expect(review).toHaveBeenCalledWith(request, [], [], [], undefined);
 
     expect(result.previousState).toBeNull();
     expect(result.persisted).toBe(true);
