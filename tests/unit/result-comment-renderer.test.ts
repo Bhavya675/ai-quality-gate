@@ -45,18 +45,11 @@ describe("renderResultComment", () => {
       ...base,
       findings: [
         finding({ id: "a", end_line: 140 }),
-        finding({
-          id: "b",
-          severity: "WORTH_A_LOOK",
-          title: "Fee never zero",
-          line: 43,
-        }),
+        finding({ id: "b", severity: "WORTH_A_LOOK", title: "Fee never zero", line: 43 }),
         finding({ id: "c", severity: "NIT", title: "Naming" }),
         finding({ id: "d", status: "resolved", title: "Old issue" }),
       ],
-      inlineCommentUrls: new Map([
-        ["a", "https://github.com/o/r/pull/1#discussion_r1"],
-      ]),
+      inlineCommentUrls: new Map([["a", "https://github.com/o/r/pull/1#discussion_r1"]]),
     });
 
     expect(body.startsWith(RESULT_MARKER)).toBe(true);
@@ -65,20 +58,14 @@ describe("renderResultComment", () => {
     expect(body).toContain("### 👀 Worth a look");
     expect(body).toContain("🧹 1 nit</summary>");
     expect(body).toContain("✅ 1 resolved");
-    // The file link opens the inline comment; ↗ opens the file itself.
+    // The link opens the comment on the Conversation tab; ↗ on Files changed.
     expect(body).toContain(
       "[`Source Code/App/Stored Procedures/Save.sql:137`](https://github.com/o/r/pull/1#discussion_r1)",
     );
-    expect(body).toContain(
-      `[↗](https://github.com/o/r/blob/${HEAD}/Source%20Code/App/Stored%20Procedures/Save.sql#L137-L140)`,
-    );
+    expect(body).toContain("[↗](https://github.com/o/r/pull/1/files#r1)");
     // No inline comment (finding "b"): the link falls back to the file.
-    expect(body).toContain(
-      `(https://github.com/o/r/blob/${HEAD}/Source%20Code/App/Stored%20Procedures/Save.sql#L43)`,
-    );
-    expect(body).toContain(
-      "[Workflow run](https://github.com/o/r/actions/runs/9)",
-    );
+    expect(body).toContain(`(https://github.com/o/r/blob/${HEAD}/Source%20Code/App/Stored%20Procedures/Save.sql#L43)`);
+    expect(body).toContain("[Workflow run](https://github.com/o/r/actions/runs/9)");
     expect(body).toContain("reviewed `f4427eb`");
     expect(body).toContain("sensitive: money-movement");
   });
@@ -87,13 +74,7 @@ describe("renderResultComment", () => {
     const body = renderResultComment({
       ...base,
       verdict: "PASS",
-      findings: [
-        finding({
-          severity: "WORTH_A_LOOK",
-          category: "testing",
-          title: "No test",
-        }),
-      ],
+      findings: [finding({ severity: "WORTH_A_LOOK", category: "testing", title: "No test" })],
     });
 
     expect(body).toContain("✅ AI quality gate: ready to merge");
@@ -113,8 +94,8 @@ describe("renderResultComment", () => {
   });
 
   it("builds single-line anchors", () => {
-    expect(buildFileUrl({ ...base }, { file: "a/b.ts", line: 5 })).toBe(
-      `https://github.com/o/r/blob/${HEAD}/a/b.ts#L5`,
-    );
+    expect(
+      buildFileUrl({ ...base }, { file: "a/b.ts", line: 5 }),
+    ).toBe(`https://github.com/o/r/blob/${HEAD}/a/b.ts#L5`);
   });
 });

@@ -1,3 +1,4 @@
+import { toFilesTabUrl } from "./inline-review-comments.js";
 import type {
   FindingSeverity,
   ReviewFinding,
@@ -65,9 +66,10 @@ function findingBullet(input: ResultCommentInput, finding: ReviewFinding): strin
   const label = `${escapeText(finding.file)}:${finding.line}`;
   const fileUrl = buildFileUrl(input, finding);
   const commentUrl = input.inlineCommentUrls?.get(finding.id);
-  // The main link opens the inline review comment; ↗ opens the file.
+  // The main link opens the comment on the Conversation tab; ↗ opens the
+  // same comment on the Files changed tab. Without a comment: the file.
   const link = `[\`${label.replace(/`/g, "")}\`](${commentUrl ?? fileUrl})`;
-  const fileLink = commentUrl ? ` · [↗](${fileUrl})` : "";
+  const fileLink = commentUrl ? ` · [↗](${toFilesTabUrl(commentUrl)})` : "";
 
   return `- **${escapeText(finding.title)}** · ${link}${fileLink}`;
 }

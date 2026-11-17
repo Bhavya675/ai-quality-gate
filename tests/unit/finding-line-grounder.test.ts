@@ -58,12 +58,7 @@ describe("groundFindingLines", () => {
 
   it("strips a line-number prefix the model copied into evidence", () => {
     const [g] = groundFindingLines(
-      [
-        f({
-          line: 3,
-          evidence: "9|     const response = await fetch(this.ordersApiUrl, {",
-        }),
-      ],
+      [f({ line: 3, evidence: "9|     const response = await fetch(this.ordersApiUrl, {" })],
       sources,
     );
     expect(g.line).toBe(9);
@@ -98,12 +93,7 @@ describe("groundFindingLines", () => {
   });
 
   it("leaves unlocatable findings and unknown files unchanged", () => {
-    const unlocatable = f({
-      line: 4,
-      evidence: "nothing matches here at all",
-      description: "none",
-      title: "none",
-    });
+    const unlocatable = f({ line: 4, evidence: "nothing matches here at all", description: "none", title: "none" });
     expect(groundFindingLines([unlocatable], sources)[0].line).toBe(4);
     expect(groundFindingLines([f({ file: "x.ts" })], sources)[0].line).toBe(3);
   });
