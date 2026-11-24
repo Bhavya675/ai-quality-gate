@@ -1,7 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Octokit } from "@octokit/rest";
 
-import { GitHubReviewStateCommentStore } from "../../src/github/review-state-comment-store.js";
+import {
+  GitHubReviewStateCommentStore,
+  extractStateBlock,
+  withStateBlock,
+} from "../../src/github/review-state-comment-store.js";
+import { RESULT_MARKER } from "../../src/github/result-comment-renderer.js";
 
 import { ReviewStateStoreError } from "../../src/storage/review-state-store.js";
 
@@ -41,12 +46,15 @@ function createCommentStore() {
     data: { id: 100 },
   });
 
+  const deleteComment = vi.fn().mockResolvedValue({});
+
   const octokit = {
     rest: {
       issues: {
         listComments,
         createComment,
         updateComment,
+        deleteComment,
       },
     },
   } as unknown as Octokit;
@@ -56,6 +64,7 @@ function createCommentStore() {
     listComments,
     createComment,
     updateComment,
+    deleteComment,
   };
 }
 
@@ -136,8 +145,8 @@ describe("GitHubReviewStateCommentStore", () => {
     expect(result).toBeNull();
   });
 
-  it("updates an existing state comment instead of creating another", async () => {
-    const { store, listComments, createComment, updateComment } =
+  it("migrates an old separate state comment into the summary comment", async () => {
+    const { store, listComments, createComment, updateComment, deleteComment } =
       createCommentStore();
 
     listComments.mockResolvedValue({
@@ -152,16 +161,14 @@ describe("GitHubReviewStateCommentStore", () => {
 
     await store.save(updatedState);
 
-    expect(updateComment).toHaveBeenCalledOnce();
-    expect(updateComment).toHaveBeenCalledWith(
-      expect.objectContaining({
-        owner: "Bhavya675",
-        repo: "ai-quality-gate",
-        comment_id: 100,
-      }),
+    // State moves into a summary comment; the old state comment is removed.
+    expect(createComment).toHaveBeenCalledOnce();
+    expect(createComment.mock.calls[0][0].body).toContain(RESULT_MARKER);
+    expect(createComment.mock.calls[0][0].body).toContain(START_MARKER);
+    expect(deleteComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 100 }),
     );
-
-    expect(createComment).not.toHaveBeenCalled();
+    expect(updateComment).not.toHaveBeenCalled();
   });
 
   it("rejects a corrupted state signature during loading", async () => {
@@ -315,6 +322,174 @@ describe("GitHubReviewStateCommentStore", () => {
 
     await expect(store.save(validState)).rejects.toMatchObject({
       code: "SAVE_FAILED",
+    });
+  });
+
+  describe("state kept inside the summary comment", () => {
+    const SUMMARY = `${RESULT_MARKER}\n## ❌ AI quality gate: not ready to merge\n\n- **A finding**`;
+
+    it("creates one summary-style comment whose state is hidden", async () => {
+      const { store, createComment } = createCommentStore();
+
+      await store.save(validState);
+
+      const body: string = createComment.mock.calls[0][0].body;
+      const visible = body.replace(/<!--[\s\S]*?-->/g, "").trim();
+
+      expect(body.startsWith(RESULT_MARKER)).toBe(true);
+      expect(visible).toContain("review in progress");
+      expect(visible).not.toMatch(/[A-Za-z0-9+/=]{40,}/);
+    });
+
+    it("updates the summary in place and keeps its visible text", async () => {
+      const { store, createComment, listComments, updateComment } =
+        createCommentStore();
+
+      await store.save(validState);
+      const first: string = createComment.mock.calls[0][0].body;
+      const summaryWithState = withStateBlock(
+        SUMMARY,
+        extractStateBlock(first),
+      );
+
+      listComments.mockResolvedValue({
+        data: [{ id: 7, body: summaryWithState }],
+      });
+
+      await store.save({ ...validState, headSha: "head999" });
+
+      const updated: string = updateComment.mock.calls[0][0].body;
+      expect(updateComment.mock.calls[0][0].comment_id).toBe(7);
+      expect(updated).toContain("**A finding**");
+      expect(updated.match(/AI_QUALITY_GATE_STATE_START/g)).toHaveLength(1);
+      expect(updated).not.toBe(summaryWithState);
+      expect(createComment).toHaveBeenCalledTimes(1);
+    });
+
+    it("loads the state stored in the summary comment", async () => {
+      const { store, createComment, listComments } = createCommentStore();
+
+      await store.save(validState);
+      const block = extractStateBlock(createComment.mock.calls[0][0].body);
+
+      listComments.mockResolvedValue({
+        data: [{ id: 7, body: withStateBlock(SUMMARY, block) }],
+      });
+
+      await expect(
+        store.load({ repository: REPOSITORY, pullRequestNumber: PR_NUMBER }),
+      ).resolves.toEqual(validState);
+    });
+
+    it("returns null for a summary that has no state yet", async () => {
+      const { store, listComments } = createCommentStore();
+
+      listComments.mockResolvedValue({ data: [{ id: 7, body: SUMMARY }] });
+
+      await expect(
+        store.load({ repository: REPOSITORY, pullRequestNumber: PR_NUMBER }),
+      ).resolves.toBeNull();
+    });
+
+    it("rejects a tampered signature inside the summary comment", async () => {
+      const { store, createComment, listComments } = createCommentStore();
+
+      await store.save(validState);
+      const block = extractStateBlock(createComment.mock.calls[0][0].body)!;
+      const encoded = /<!-- ([A-Za-z0-9+/=]+) -->/.exec(block)![1];
+      const envelope = JSON.parse(
+        Buffer.from(encoded, "base64").toString("utf8"),
+      );
+      envelope.signature = "0".repeat(64);
+      const tampered = Buffer.from(JSON.stringify(envelope), "utf8").toString(
+        "base64",
+      );
+
+      listComments.mockResolvedValue({
+        data: [
+          {
+            id: 7,
+            body: withStateBlock(SUMMARY, block.replace(encoded, tampered)),
+          },
+        ],
+      });
+
+      await expect(
+        store.load({ repository: REPOSITORY, pullRequestNumber: PR_NUMBER }),
+      ).rejects.toBeInstanceOf(ReviewStateStoreError);
+
+      await expect(store.save(validState)).rejects.toBeInstanceOf(
+        ReviewStateStoreError,
+      );
+    });
+
+    it("refuses to write when the markers in the summary are malformed", async () => {
+      const { store, listComments, updateComment } = createCommentStore();
+
+      listComments.mockResolvedValue({
+        data: [{ id: 7, body: `${SUMMARY}\n${START_MARKER}\nbroken` }],
+      });
+
+      await expect(store.save(validState)).rejects.toBeInstanceOf(
+        ReviewStateStoreError,
+      );
+      expect(updateComment).not.toHaveBeenCalled();
+    });
+
+    it("fails clearly when the state is too large for one comment", async () => {
+      const { store, createComment } = createCommentStore();
+      const text = "x".repeat(1500);
+
+      // A schema-valid state that is simply too big for a single comment.
+      const huge: ReviewState = {
+        ...validState,
+        findings: Array.from({ length: 12 }, (_, index) => ({
+          id: `finding-${index}`,
+          severity: "BLOCKER" as const,
+          category: "correctness" as const,
+          file: "src/a.ts",
+          line: index + 1,
+          title: `Finding ${index}`,
+          description: text,
+          impact: text,
+          suggested_fix: text,
+          evidence: text,
+          occurrence: "new" as const,
+          status: "open" as const,
+        })),
+      };
+
+      await expect(store.save(huge)).rejects.toMatchObject({
+        message: expect.stringContaining("too large"),
+      });
+      expect(createComment).not.toHaveBeenCalled();
+    });
+
+    it("still saves when deleting the old state comment fails", async () => {
+      const { store, listComments, createComment, deleteComment } =
+        createCommentStore();
+
+      deleteComment.mockRejectedValue(new Error("403"));
+      listComments.mockResolvedValue({
+        data: [createStateComment(validState)],
+      });
+
+      await expect(store.save(validState)).resolves.toBeUndefined();
+      expect(createComment).toHaveBeenCalledOnce();
+    });
+
+    it("extract/with helpers keep exactly one state block", () => {
+      const block =
+        "<!-- AI_QUALITY_GATE_STATE_START -->\n<!-- eA== -->\n<!-- AI_QUALITY_GATE_STATE_END -->";
+      const body = withStateBlock("visible", block);
+
+      expect(extractStateBlock(body)).toBe(block);
+      expect(withStateBlock("new text", extractStateBlock(body))).toContain(
+        "new text",
+      );
+      expect(extractStateBlock("no state here")).toBeNull();
+      expect(extractStateBlock(`${block}\n${block}`)).toBeNull();
+      expect(withStateBlock("only visible", null)).toBe("only visible");
     });
   });
 });

@@ -17,18 +17,94 @@ import {
   type ReviewStateStore,
 } from "../storage/review-state-store.js";
 
+import { RESULT_MARKER } from "./result-comment-renderer.js";
+
 const START_MARKER = "<!-- AI_QUALITY_GATE_STATE_START -->";
 const END_MARKER = "<!-- AI_QUALITY_GATE_STATE_END -->";
 
-const COMMENT_MARKER = `${START_MARKER}\n`;
-
 const COMMENTS_PER_PAGE = 100;
+const MAX_PAGES = 20;
+// GitHub rejects comments longer than 65,536 characters.
+const MAX_COMMENT_CHARS = 64_000;
+
+const PLACEHOLDER_BODY = `${RESULT_MARKER}\n## ⏳ AI quality gate: review in progress…`;
 
 interface StateComment {
   id: number;
-  body: string | null;
+  body: string;
 }
 
+/** The hidden state block (markers included), or null when there is none. */
+export function extractStateBlock(
+  body: string | null | undefined,
+): string | null {
+  if (!body) {
+    return null;
+  }
+
+  const start = body.indexOf(START_MARKER);
+  const end = body.indexOf(END_MARKER);
+
+  if (
+    start === -1 ||
+    end === -1 ||
+    end <= start ||
+    body.indexOf(START_MARKER, start + 1) !== -1 ||
+    body.indexOf(END_MARKER, end + 1) !== -1
+  ) {
+    return null;
+  }
+
+  return body.slice(start, end + END_MARKER.length);
+}
+
+/** Visible summary text with the hidden state block appended. */
+export function withStateBlock(visible: string, block: string | null): string {
+  return block ? `${visible.trimEnd()}\n\n${block}` : visible;
+}
+
+function stripStateBlock(body: string): string {
+  const block = extractStateBlock(body);
+
+  return block ? body.replace(block, "").trimEnd() : body;
+}
+
+function buildStateBlock(serialized: string): string {
+  const encoded = Buffer.from(serialized, "utf8").toString("base64");
+
+  // Base64 never contains "--" or ">", so it is safe inside an HTML comment.
+  return [START_MARKER, `<!-- ${encoded} -->`, END_MARKER].join("\n");
+}
+
+function decodeBlock(block: string): string {
+  const between = block
+    .slice(START_MARKER.length, block.length - END_MARKER.length)
+    .trim();
+
+  // Current format: base64 inside an HTML comment. Legacy: bare base64.
+  const wrapped = /^<!--([\s\S]*)-->$/.exec(between);
+  const encoded = (wrapped ? wrapped[1] : between).trim();
+
+  try {
+    return Buffer.from(encoded, "base64").toString("utf8");
+  } catch {
+    throw new ReviewStateStoreError(
+      "INTEGRITY_CHECK_FAILED",
+      "AI Quality Gate state encoding is invalid.",
+    );
+  }
+}
+
+function integrityError(message: string): ReviewStateStoreError {
+  return new ReviewStateStoreError("INTEGRITY_CHECK_FAILED", message);
+}
+
+/**
+ * Keeps the review state inside the summary comment, in a hidden HTML
+ * comment, so the pull request shows a single AI Quality Gate comment.
+ * State found in the older separate state comment is still read and is
+ * migrated (and that comment deleted) on the next save.
+ */
 export class GitHubReviewStateCommentStore implements ReviewStateStore {
   constructor(
     private readonly octokit: Octokit,
@@ -47,26 +123,23 @@ export class GitHubReviewStateCommentStore implements ReviewStateStore {
     const { owner, repo } = this.parseRepository(validatedKey.repository);
 
     try {
-      const comments = await this.findStateComments(
+      const found = await this.findComments(
         owner,
         repo,
         validatedKey.pullRequestNumber,
       );
 
-      if (comments.length === 0) {
+      const source = this.stateSource(found);
+
+      if (!source) {
         return null;
       }
 
-      if (comments.length > 1) {
-        throw new ReviewStateStoreError(
-          "CONCURRENT_UPDATE",
-          "Multiple AI Quality Gate state comments were found.",
-        );
-      }
-
-      const serialized = this.extractState(comments[0].body);
-
-      return decodeReviewState(serialized, this.signingSecret, validatedKey);
+      return decodeReviewState(
+        decodeBlock(source.block),
+        this.signingSecret,
+        validatedKey,
+      );
     } catch (error) {
       if (error instanceof ReviewStateStoreError) {
         throw error;
@@ -94,49 +167,68 @@ export class GitHubReviewStateCommentStore implements ReviewStateStore {
     const { owner, repo } = this.parseRepository(validatedState.repository);
 
     try {
-      const serialized = encodeReviewState(validatedState, this.signingSecret);
+      const block = buildStateBlock(
+        encodeReviewState(validatedState, this.signingSecret),
+      );
 
-      const body = this.createCommentBody(serialized);
-
-      const comments = await this.findStateComments(
+      const found = await this.findComments(
         owner,
         repo,
         validatedState.pullRequestNumber,
       );
 
-      if (comments.length > 1) {
-        throw new ReviewStateStoreError(
-          "CONCURRENT_UPDATE",
-          "Multiple AI Quality Gate state comments were found.",
-        );
-      }
+      // Do not overwrite existing state until its signature
+      // and PR identity have been verified.
+      const existing = this.stateSource(found);
 
-      if (comments.length === 1) {
-        // Do not overwrite existing state until its signature
-        // and PR identity have been verified.
-        const existingSerialized = this.extractState(comments[0].body);
-
-        decodeReviewState(existingSerialized, this.signingSecret, {
+      if (existing) {
+        decodeReviewState(decodeBlock(existing.block), this.signingSecret, {
           repository: validatedState.repository,
           pullRequestNumber: validatedState.pullRequestNumber,
         });
+      }
+
+      const unified = found.unified[0];
+
+      if (unified) {
+        const body = withStateBlock(stripStateBlock(unified.body), block);
+        this.assertFits(body);
 
         await this.octokit.rest.issues.updateComment({
           owner,
           repo,
-          comment_id: comments[0].id,
+          comment_id: unified.id,
           body,
         });
+      } else {
+        const body = withStateBlock(PLACEHOLDER_BODY, block);
+        this.assertFits(body);
 
-        return;
+        await this.octokit.rest.issues.createComment({
+          owner,
+          repo,
+          issue_number: validatedState.pullRequestNumber,
+          body,
+        });
       }
 
-      await this.octokit.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: validatedState.pullRequestNumber,
-        body,
-      });
+      // The state now lives in the summary: remove the old separate comment.
+      const legacy = found.legacy[0];
+
+      if (legacy) {
+        try {
+          await this.octokit.rest.issues.deleteComment({
+            owner,
+            repo,
+            comment_id: legacy.id,
+          });
+        } catch (error) {
+          console.warn(
+            "[ReviewStateStore] Could not delete the old state comment:",
+            error instanceof Error ? error.message : "unknown error",
+          );
+        }
+      }
     } catch (error) {
       if (error instanceof ReviewStateStoreError) {
         throw error;
@@ -147,6 +239,52 @@ export class GitHubReviewStateCommentStore implements ReviewStateStore {
         "Unable to save review state to GitHub.",
       );
     }
+  }
+
+  private assertFits(body: string): void {
+    if (body.length > MAX_COMMENT_CHARS) {
+      throw new ReviewStateStoreError(
+        "SAVE_FAILED",
+        "Review state is too large to store in the summary comment.",
+      );
+    }
+  }
+
+  /** The comment whose state block is the current state. */
+  private stateSource(found: {
+    unified: StateComment[];
+    legacy: StateComment[];
+  }): { block: string } | null {
+    const unified = found.unified[0];
+
+    if (unified) {
+      const hasMarkers =
+        unified.body.includes(START_MARKER) ||
+        unified.body.includes(END_MARKER);
+      const block = extractStateBlock(unified.body);
+
+      if (block) {
+        return { block };
+      }
+
+      if (hasMarkers) {
+        throw integrityError("AI Quality Gate state markers are invalid.");
+      }
+    }
+
+    const legacy = found.legacy[0];
+
+    if (legacy) {
+      const block = extractStateBlock(legacy.body);
+
+      if (!block) {
+        throw integrityError("AI Quality Gate state markers are invalid.");
+      }
+
+      return { block };
+    }
+
+    return null;
   }
 
   private validateKey(key: ReviewStateKey): ReviewStateKey {
@@ -180,16 +318,19 @@ export class GitHubReviewStateCommentStore implements ReviewStateStore {
     };
   }
 
-  private async findStateComments(
+  /**
+   * unified: the summary comment (it carries RESULT_MARKER).
+   * legacy: an older separate state comment (state markers, no summary).
+   */
+  private async findComments(
     owner: string,
     repo: string,
     pullRequestNumber: number,
-  ): Promise<StateComment[]> {
-    const matches: StateComment[] = [];
+  ): Promise<{ unified: StateComment[]; legacy: StateComment[] }> {
+    const unified: StateComment[] = [];
+    const legacy: StateComment[] = [];
 
-    let page = 1;
-
-    while (true) {
+    for (let page = 1; page <= MAX_PAGES; page++) {
       const response = await this.octokit.rest.issues.listComments({
         owner,
         repo,
@@ -199,70 +340,27 @@ export class GitHubReviewStateCommentStore implements ReviewStateStore {
       });
 
       for (const comment of response.data) {
-        if (comment.body?.includes(START_MARKER)) {
-          matches.push({
-            id: comment.id,
-            body: comment.body,
-          });
+        const body = comment.body ?? "";
+
+        if (body.includes(RESULT_MARKER)) {
+          unified.push({ id: comment.id, body });
+        } else if (body.includes(START_MARKER)) {
+          legacy.push({ id: comment.id, body });
         }
       }
 
       if (response.data.length < COMMENTS_PER_PAGE) {
         break;
       }
-
-      page++;
     }
 
-    return matches;
-  }
-
-  private extractState(body: string | null): string {
-    if (!body) {
+    if (unified.length > 1 || legacy.length > 1) {
       throw new ReviewStateStoreError(
-        "INTEGRITY_CHECK_FAILED",
-        "AI Quality Gate state comment has no content.",
+        "CONCURRENT_UPDATE",
+        "Multiple AI Quality Gate state comments were found.",
       );
     }
 
-    const startIndex = body.indexOf(START_MARKER);
-    const endIndex = body.indexOf(END_MARKER);
-
-    if (
-      startIndex === -1 ||
-      endIndex === -1 ||
-      endIndex <= startIndex ||
-      body.indexOf(START_MARKER, startIndex + 1) !== -1 ||
-      body.indexOf(END_MARKER, endIndex + 1) !== -1
-    ) {
-      throw new ReviewStateStoreError(
-        "INTEGRITY_CHECK_FAILED",
-        "AI Quality Gate state markers are invalid.",
-      );
-    }
-
-    const serialized = body
-      .slice(startIndex + START_MARKER.length, endIndex)
-      .trim();
-
-    try {
-      return Buffer.from(serialized, "base64").toString("utf8");
-    } catch {
-      throw new ReviewStateStoreError(
-        "INTEGRITY_CHECK_FAILED",
-        "AI Quality Gate state encoding is invalid.",
-      );
-    }
-  }
-
-  private createCommentBody(serialized: string): string {
-    const encoded = Buffer.from(serialized, "utf8").toString("base64");
-
-    return [
-      "<!-- AI Quality Gate managed state. Do not edit manually. -->",
-      COMMENT_MARKER.trimEnd(),
-      encoded,
-      END_MARKER,
-    ].join("\n");
+    return { unified, legacy };
   }
 }
