@@ -17,7 +17,14 @@ import { AiGateway } from "./gateway/ai-gateway.js";
 import { GeminiProvider } from "./gateway/providers/gemini-provider.js";
 import { AiFindingResolutionChecker } from "./review/ai-finding-resolution-checker.js";
 import { InlineReviewCommentPublisher } from "./github/inline-review-comments.js";
-import { RESULT_MARKER, renderResultComment } from "./github/result-comment-renderer.js";
+import {
+  extractStateBlock,
+  withStateBlock,
+} from "./github/review-state-comment-store.js";
+import {
+  RESULT_MARKER,
+  renderResultComment,
+} from "./github/result-comment-renderer.js";
 
 async function publishResultComment(
   octokit: ReturnType<typeof createGitHubClient>,
@@ -26,23 +33,33 @@ async function publishResultComment(
   pullRequestNumber: number,
   body: string,
 ): Promise<void> {
-  const response = await octokit.rest.issues.listComments({
-    owner,
-    repo: repository,
-    issue_number: pullRequestNumber,
-    per_page: 100,
-  });
+  let existing: { id: number; body?: string | null } | undefined;
 
-  const existing = response.data.find((comment) =>
-    comment.body?.includes(RESULT_MARKER),
-  );
+  for (let page = 1; page <= 20 && !existing; page++) {
+    const response = await octokit.rest.issues.listComments({
+      owner,
+      repo: repository,
+      issue_number: pullRequestNumber,
+      per_page: 100,
+      page,
+    });
+
+    existing = response.data.find((comment) =>
+      comment.body?.includes(RESULT_MARKER),
+    );
+
+    if (response.data.length < 100) {
+      break;
+    }
+  }
 
   if (existing) {
+    // The review state lives in a hidden block of this same comment: keep it.
     await octokit.rest.issues.updateComment({
       owner,
       repo: repository,
       comment_id: existing.id,
-      body,
+      body: withStateBlock(body, extractStateBlock(existing.body)),
     });
     return;
   }
@@ -65,7 +82,9 @@ async function writeStepSummary(markdown: string): Promise<void> {
 async function main(): Promise<void> {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) {
-    throw new Error("GITHUB_EVENT_PATH is not set. Run this command from a GitHub Actions pull_request event.");
+    throw new Error(
+      "GITHUB_EVENT_PATH is not set. Run this command from a GitHub Actions pull_request event.",
+    );
   }
 
   const eventPayload = JSON.parse(await readFile(eventPath, "utf8")) as unknown;
@@ -74,16 +93,21 @@ async function main(): Promise<void> {
     throw new Error("GITHUB_REPOSITORY is not set.");
   }
 
-  const [ownerFromEnvironment, repositoryFromEnvironmentName] = repositoryFromEnvironment.split("/");
+  const [ownerFromEnvironment, repositoryFromEnvironmentName] =
+    repositoryFromEnvironment.split("/");
   if (!ownerFromEnvironment || !repositoryFromEnvironmentName) {
     throw new Error("GITHUB_REPOSITORY must use owner/repository format.");
   }
 
   const guidelinesPath = resolve(process.cwd(), "docs/review-guidelines.md");
   const guidelines = await readFile(guidelinesPath, "utf8");
-  const actualGuidelinesSha = createHash("sha256").update(guidelines, "utf8").digest("hex");
+  const actualGuidelinesSha = createHash("sha256")
+    .update(guidelines, "utf8")
+    .digest("hex");
   if (actualGuidelinesSha !== env.REVIEW_GUIDELINES_SHA) {
-    throw new Error("REVIEW_GUIDELINES_SHA does not match docs/review-guidelines.md. Update the configured hash.");
+    throw new Error(
+      "REVIEW_GUIDELINES_SHA does not match docs/review-guidelines.md. Update the configured hash.",
+    );
   }
 
   const octokit = createGitHubClient(env.GITHUB_TOKEN);
@@ -126,10 +150,14 @@ async function main(): Promise<void> {
     octokit,
     env.REVIEW_STATE_SIGNING_SECRET,
   );
-  const stateCoordinator = new ReviewStateCoordinator(reviewService, stateStore, {
-    policyVersion: env.REVIEW_POLICY_VERSION,
-    guidelinesSha: actualGuidelinesSha,
-  });
+  const stateCoordinator = new ReviewStateCoordinator(
+    reviewService,
+    stateStore,
+    {
+      policyVersion: env.REVIEW_POLICY_VERSION,
+      guidelinesSha: actualGuidelinesSha,
+    },
+  );
 
   const pipeline = new PullRequestReviewPipeline({
     pullRequestService,
@@ -139,7 +167,11 @@ async function main(): Promise<void> {
     reviewStateCoordinator: stateCoordinator,
     reviewGuard: new PullRequestReviewGuard(),
     getLatestHeadSha: async (owner, repository, pullRequestNumber) =>
-      pullRequestService.getLatestHeadSha({ owner, repository, pullRequestNumber }),
+      pullRequestService.getLatestHeadSha({
+        owner,
+        repository,
+        pullRequestNumber,
+      }),
     guidelines,
     policyVersion: env.REVIEW_POLICY_VERSION,
   });
@@ -174,7 +206,13 @@ async function main(): Promise<void> {
     });
 
   // 1) Summary first, so it sits above the inline review threads.
-  await publishResultComment(octokit, owner, repository, pullRequestNumber, renderComment());
+  await publishResultComment(
+    octokit,
+    owner,
+    repository,
+    pullRequestNumber,
+    renderComment(),
+  );
 
   // 2) Inline comments are best-effort: they must never change the gate result.
   let inlineCommentUrls = new Map<string, string>();
@@ -199,7 +237,13 @@ async function main(): Promise<void> {
   // 3) Re-publish the summary so each file link opens its inline comment.
   const comment = renderComment(inlineCommentUrls);
   if (inlineCommentUrls.size > 0) {
-    await publishResultComment(octokit, owner, repository, pullRequestNumber, comment);
+    await publishResultComment(
+      octokit,
+      owner,
+      repository,
+      pullRequestNumber,
+      comment,
+    );
   }
   await writeStepSummary(comment);
 
@@ -216,7 +260,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : "Unexpected review execution error.";
+  const message =
+    error instanceof Error
+      ? error.message
+      : "Unexpected review execution error.";
   console.error(`AI Quality Gate failed: ${message}`);
   process.exitCode = 1;
 });
